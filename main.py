@@ -63,10 +63,15 @@ def to_num(s):
 
 def load_uploaded(uploaded_file, sheet_name=None) -> pd.DataFrame:
     name = uploaded_file.name.lower()
-    if name.endswith(".csv"):
-        return pd.read_csv(uploaded_file)
-    if name.endswith(".xlsx"):
-        return pd.read_excel(uploaded_file, engine="openpyxl", sheet_name=sheet_name)
+    try:
+        if name.endswith(".csv"):
+            # Added encoding to handle special characters in CSVs
+            return pd.read_csv(uploaded_file, encoding='utf-8', on_bad_lines='skip')
+        if name.endswith(".xlsx"):
+            return pd.read_excel(uploaded_file, engine="openpyxl", sheet_name=sheet_name)
+    except Exception as e:
+        st.error(f"Error reading file: {e}")
+        return pd.DataFrame() # Returns an empty table instead of crashing
     raise ValueError("Unsupported file type.")
 
 def build_audit(df_raw: pd.DataFrame):
