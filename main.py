@@ -25,7 +25,7 @@ h1, h2, h3 { color: #0f172a !important; }
 """, unsafe_allow_html=True)
 
 # ----------------------------
-# 2) State Management
+# 2) State Management (Session Data)
 # ----------------------------
 if "logged_in" not in st.session_state:
     st.session_state["logged_in"] = False
@@ -33,132 +33,102 @@ if "user_name" not in st.session_state:
     st.session_state["user_name"] = "Raghini Kumar"
 if "org_name" not in st.session_state:
     st.session_state["org_name"] = "UIC"
+# Simple mock DB for the demo
+if "accounts" not in st.session_state:
+    st.session_state["accounts"] = {"admin": "uic2026"}
 
 # ----------------------------
-# Helpers
+# Helpers & Forensic Logic
 # ----------------------------
 def _norm(s: str) -> str:
     return "".join(ch.lower() for ch in str(s).strip() if ch.isalnum())
 
 def find_col(df: pd.DataFrame, candidates: list[str]):
-    # Added safety check: ensure df is actually a DataFrame
-    if not isinstance(df, pd.DataFrame):
-        return None
+    if not isinstance(df, pd.DataFrame): return None
     norm_map = {_norm(c): c for c in df.columns}
     for cand in candidates:
         key = _norm(cand)
-        if key in norm_map:
-            return norm_map[key]
-    for cand in candidates:
-        key = _norm(cand)
-        for k, real in norm_map.items():
-            if key and (key in k or k in key):
-                return real
+        if key in norm_map: return norm_map[key]
     return None
 
-def to_dt(s):
-    return pd.to_datetime(s, errors="coerce")
-
-def to_num(s):
-    return pd.to_numeric(s, errors="coerce")
-
-# FIXED FUNCTION: Default sheet_name to 0 (first sheet) instead of None
-def load_uploaded(uploaded_file, sheet_name=0) -> pd.DataFrame:
+def load_uploaded(uploaded_file) -> pd.DataFrame:
     name = uploaded_file.name.lower()
     try:
         if name.endswith(".csv"):
             return pd.read_csv(uploaded_file, encoding='utf-8', on_bad_lines='skip')
-        if name.endswith(".xlsx") or name.endswith(".xls"):
-            # sheet_name=0 ensures we get a DataFrame, not a dict
-            return pd.read_excel(uploaded_file, engine="openpyxl", sheet_name=sheet_name)
-    except Exception as e:
-        st.error(f"Error reading file: {e}")
+        else:
+            return pd.read_excel(uploaded_file, engine="openpyxl")
+    except:
         return pd.DataFrame()
-    return pd.DataFrame()
 
 def build_audit(df_raw: pd.DataFrame):
-    if df_raw.empty:
-        return pd.DataFrame(), pd.DataFrame()
-    
     df = df_raw.copy()
+    col_invoice = find_col(df, ["Invoice_ID", "InvoiceID"])
+    col_vendor  = find_col(df, ["Vendor_Name", "VendorName", "Vendor"])
+    col_invdate = find_col(df, ["Invoice_Date", "Date"])
+    col_unit    = find_col(df, ["Unit_Price", "Price"])
+    col_lineamt = find_col(df, ["Line_Amount", "Amount"])
+    col_total   = find_col(df, ["Invoice_Total", "Total"])
 
-    # Column Mapping
-    col_invoice = find_col(df, ["Invoice_ID", "Invoice ID", "InvoiceNumber"])
-    col_vendor  = find_col(df, ["Vendor_Name", "Vendor Name", "Vendor"])
-    col_invdate = find_col(df, ["Invoice_Date", "Invoice Date", "Date"])
-    col_unit    = find_col(df, ["Unit_Price", "Unit Price", "Price"])
-    col_lineamt = find_col(df, ["Line_Amount", "Line Amount", "Amount"])
-    col_total   = find_col(df, ["Invoice_Total", "Invoice Total", "Total"])
-
-    # Normalization
-    df["__Invoice_ID"] = df[col_invoice].astype(str).str.strip() if col_invoice else "UNKNOWN"
-    df["__Vendor"]     = df[col_vendor].astype(str).str.strip() if col_vendor else "UNKNOWN"
-    df["__Invoice_Date"] = to_dt(df[col_invdate]) if col_invdate else pd.NaT
-    df["__Unit_Price"] = to_num(df[col_unit]) if col_unit else 0.0
-    df["__Line_Amount"]= to_num(df[col_lineamt]) if col_lineamt else 0.0
-    df["__Invoice_Total"] = to_num(df[col_total]) if col_total else 0.0
+    df["__Invoice_ID"] = df[col_invoice].astype(str) if col_invoice else "N/A"
+    df["__Vendor"] = df[col_vendor].astype(str) if col_vendor else "N/A"
+    df["__Line_Amount"] = pd.to_numeric(df[col_lineamt], errors='coerce').fillna(0)
+    df["__Invoice_Total"] = pd.to_numeric(df[col_total], errors='coerce').fillna(0)
+    df["__Unit_Price"] = pd.to_numeric(df[col_unit], errors='coerce').fillna(0)
+    df["__Invoice_Date"] = pd.to_datetime(df[col_invdate], errors='coerce')
 
     issues = []
-
-    # 1) Duplicate Invoices
+    # 1. Duplicates
     dup_ids = df["__Invoice_ID"][df["__Invoice_ID"].duplicated(keep=False)]
-    if not dup_ids.empty and (df["__Invoice_ID"] != "UNKNOWN").any():
-        amt = df[df["__Invoice_ID"].isin(dup_ids.unique())].groupby("__Invoice_ID")["__Invoice_Total"].max().sum()
-        issues.append({"Category": "Duplicate Invoice", "Amount ($)": float(amt), "Count": int(dup_ids.nunique()), "Priority": "🔴 Critical"})
-
-    # 2) Price Creep (Contract Drift)
-    if col_vendor and col_unit and col_invdate:
-        creep_amt = 0
-        creep_count = 0
-        for vendor, group in df.sort_values("__Invoice_Date").groupby("__Vendor"):
-            if len(group) > 1:
-                first_price = group["__Unit_Price"].iloc[0]
-                last_price = group["__Unit_Price"].iloc[-1]
-                if last_price > (first_price * 1.05): # 5% threshold
-                    creep_amt += (last_price - first_price) * group["__Line_Amount"].count()
-                    creep_count += 1
-        if creep_count > 0:
-            issues.append({"Category": "Price Creep / Drift", "Amount ($)": float(creep_amt), "Count": int(creep_count), "Priority": "🟠 High"})
-
-    # 3) Negative values
-    neg_count = (df["__Line_Amount"] < 0).sum()
-    if neg_count > 0:
-        amt = df.loc[df["__Line_Amount"] < 0, "__Line_Amount"].abs().sum()
-        issues.append({"Category": "Negative Amount Leak", "Amount ($)": float(amt), "Count": int(neg_count), "Priority": "🟣 High"})
-
-    # 4) Total Mismatch
-    if col_invoice and col_lineamt and col_total:
-        sums = df.groupby("__Invoice_ID")["__Line_Amount"].sum()
-        totals = df.groupby("__Invoice_ID")["__Invoice_Total"].max()
-        mismatch = (sums.round(2) != totals.round(2)).sum()
-        if mismatch > 0:
-            issues.append({"Category": "Invoice Total Mismatch", "Amount ($)": float(sums.sum() * 0.05), "Count": int(mismatch), "Priority": "🔴 Critical"})
-
-    audit = pd.DataFrame(issues)
-    if audit.empty:
-        audit = pd.DataFrame([{"Category": "Clean Audit", "Amount ($)": 0.0, "Count": 0, "Priority": "🟢 Low"}])
+    if not dup_ids.empty:
+        amt = df[df["__Invoice_ID"].isin(dup_ids.unique())]["__Invoice_Total"].sum()
+        issues.append({"Category": "Duplicate Invoice", "Amount ($)": float(amt), "Priority": "🔴 Critical"})
     
-    audit.insert(0, "Vendor", df["__Vendor"].iloc[0] if not df.empty else "N/A")
-    return audit, df
+    # 2. Price Creep
+    creep_amt = 0
+    for v, group in df.sort_values("__Invoice_Date").groupby("__Vendor"):
+        if len(group) > 1:
+            diff = group["__Unit_Price"].iloc[-1] - group["__Unit_Price"].iloc[0]
+            if diff > 0: creep_amt += diff * group["__Line_Amount"].count()
+    if creep_amt > 0:
+        issues.append({"Category": "Price Creep", "Amount ($)": float(creep_amt), "Priority": "🟠 High"})
 
-def money_fmt(x):
-    return f"${float(x):,.2f}"
+    # 3. Negatives
+    negs = df[df["__Line_Amount"] < 0]
+    if not negs.empty:
+        issues.append({"Category": "Negative Leak", "Amount ($)": float(negs["__Line_Amount"].abs().sum()), "Priority": "🟣 High"})
+
+    return pd.DataFrame(issues)
 
 # ----------------------------
-# 3) UI Logic
+# 3) Login & Create Account UI
 # ----------------------------
 if not st.session_state["logged_in"]:
     st.title("🛡️ ClearSpend Security Portal")
-    _, center_col, _ = st.columns([1, 2, 1])
-    with center_col:
-        user = st.text_input("Username")
-        pw = st.text_input("Password", type="password")
-        if st.button("Access Dashboard", use_container_width=True):
-            if user == "admin" and pw == "uic2026":
+    tab1, tab2 = st.tabs(["Login", "Create Account"])
+    
+    with tab1:
+        u = st.text_input("Username")
+        p = st.text_input("Password", type="password")
+        if st.button("Log In"):
+            if u in st.session_state["accounts"] and st.session_state["accounts"][u] == p:
                 st.session_state["logged_in"] = True
                 st.rerun()
             else:
-                st.error("Invalid credentials")
+                st.error("Invalid credentials.")
+                
+    with tab2:
+        new_u = st.text_input("New Username")
+        new_p = st.text_input("New Password", type="password")
+        new_n = st.text_input("Full Name")
+        if st.button("Sign Up"):
+            st.session_state["accounts"][new_u] = new_p
+            st.session_state["user_name"] = new_n
+            st.success("Account created! You can now log in.")
+
+# ----------------------------
+# 4) Main Dashboard
+# ----------------------------
 else:
     with st.sidebar:
         st.markdown('<p class="brand-text">💎 ClearSpend</p>', unsafe_allow_html=True)
@@ -168,23 +138,34 @@ else:
             st.rerun()
 
     st.title("📊 Executive Recovery Dashboard")
-    uploaded_file = st.file_uploader("Upload AP Ledger", type=["csv", "xlsx"])
+    f = st.file_uploader("Upload AP Ledger", type=["csv", "xlsx"])
 
-    if uploaded_file:
-        with st.status("🚀 AI Forensic Engine Scanning...", expanded=False):
-            # FIXED: Calling without sheet_name now defaults correctly to 0
-            df_raw = load_uploaded(uploaded_file)
-            audit_df, df_work = build_audit(df_raw)
+    if f:
+        with st.status("🚀 AI Engine Scanning..."):
+            raw = load_uploaded(f)
+            audit_df = build_audit(raw)
         
-        if not audit_df.empty:
-            total_leak = audit_df["Amount ($)"].sum()
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Recoverable Cash", money_fmt(total_leak))
-            m2.metric("Leaks Found", int(audit_df["Count"].sum()))
-            m3.metric("Projected ROI", f"{(total_leak/15000):.1f}x" if total_leak > 0 else "0x")
+        # KPI Row
+        m1, m2, m3 = st.columns(3)
+        total = audit_df["Amount ($)"].sum() if not audit_df.empty else 0
+        m1.metric("Recoverable Cash", f"${total:,.2f}")
+        m2.metric("Leaks Found", len(audit_df))
+        m3.metric("ROI", f"{(total/15000):.1f}x")
 
-            st.divider()
-            st.write("### 🔍 Audit Detail")
-            st.dataframe(audit_df, use_container_width=True, hide_index=True)
-        else:
-            st.warning("No data found in the uploaded file.")
+        st.divider()
+        
+        # FILTERS & CHARTS
+        col_f, col_c = st.columns([1, 1.5])
+        
+        with col_f:
+            st.write("### 🔍 Filters")
+            cats = st.multiselect("Select Categories", options=audit_df["Category"].unique(), default=audit_df["Category"].unique())
+            filtered = audit_df[audit_df["Category"].isin(cats)]
+            st.dataframe(filtered, use_container_width=True, hide_index=True)
+
+        with col_c:
+            st.write("### 📈 Leak Distribution")
+            if not filtered.empty:
+                st.bar_chart(data=filtered, x="Category", y="Amount ($)")
+            else:
+                st.info("Select a category to view chart.")
