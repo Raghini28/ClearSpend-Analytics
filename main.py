@@ -7,9 +7,7 @@ import time
 # ----------------------------
 st.set_page_config(page_title="ClearSpend Analytics", layout="wide", initial_sidebar_state="expanded")
 
-# ----------------------------
 # Premium Styling
-# ----------------------------
 st.markdown("""
 <style>
 .stApp { background-color: #FFF0F5; }
@@ -43,6 +41,9 @@ def _norm(s: str) -> str:
     return "".join(ch.lower() for ch in str(s).strip() if ch.isalnum())
 
 def find_col(df: pd.DataFrame, candidates: list[str]):
+    # Added safety check: ensure df is actually a DataFrame
+    if not isinstance(df, pd.DataFrame):
+        return None
     norm_map = {_norm(c): c for c in df.columns}
     for cand in candidates:
         key = _norm(cand)
@@ -61,20 +62,24 @@ def to_dt(s):
 def to_num(s):
     return pd.to_numeric(s, errors="coerce")
 
-def load_uploaded(uploaded_file, sheet_name=None) -> pd.DataFrame:
+# FIXED FUNCTION: Default sheet_name to 0 (first sheet) instead of None
+def load_uploaded(uploaded_file, sheet_name=0) -> pd.DataFrame:
     name = uploaded_file.name.lower()
     try:
         if name.endswith(".csv"):
-            # Added encoding to handle special characters in CSVs
             return pd.read_csv(uploaded_file, encoding='utf-8', on_bad_lines='skip')
-        if name.endswith(".xlsx"):
+        if name.endswith(".xlsx") or name.endswith(".xls"):
+            # sheet_name=0 ensures we get a DataFrame, not a dict
             return pd.read_excel(uploaded_file, engine="openpyxl", sheet_name=sheet_name)
     except Exception as e:
         st.error(f"Error reading file: {e}")
-        return pd.DataFrame() # Returns an empty table instead of crashing
-    raise ValueError("Unsupported file type.")
+        return pd.DataFrame()
+    return pd.DataFrame()
 
 def build_audit(df_raw: pd.DataFrame):
+    if df_raw.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    
     df = df_raw.copy()
 
     # Column Mapping
@@ -101,8 +106,7 @@ def build_audit(df_raw: pd.DataFrame):
         amt = df[df["__Invoice_ID"].isin(dup_ids.unique())].groupby("__Invoice_ID")["__Invoice_Total"].max().sum()
         issues.append({"Category": "Duplicate Invoice", "Amount ($)": float(amt), "Count": int(dup_ids.nunique()), "Priority": "🔴 Critical"})
 
-    # 2) STRATEGIC ADDITION: Price Creep (Contract Drift)
-    # Checks if unit price increased for the same vendor over time
+    # 2) Price Creep (Contract Drift)
     if col_vendor and col_unit and col_invdate:
         creep_amt = 0
         creep_count = 0
@@ -133,7 +137,7 @@ def build_audit(df_raw: pd.DataFrame):
     audit = pd.DataFrame(issues)
     if audit.empty:
         audit = pd.DataFrame([{"Category": "Clean Audit", "Amount ($)": 0.0, "Count": 0, "Priority": "🟢 Low"}])
-
+    
     audit.insert(0, "Vendor", df["__Vendor"].iloc[0] if not df.empty else "N/A")
     return audit, df
 
@@ -150,7 +154,7 @@ if not st.session_state["logged_in"]:
         user = st.text_input("Username")
         pw = st.text_input("Password", type="password")
         if st.button("Access Dashboard", use_container_width=True):
-            if user == "admin" and pw == "uic2026": # STRATEGIC NOTE: Use secrets.toml for production
+            if user == "admin" and pw == "uic2026":
                 st.session_state["logged_in"] = True
                 st.rerun()
             else:
@@ -168,18 +172,19 @@ else:
 
     if uploaded_file:
         with st.status("🚀 AI Forensic Engine Scanning...", expanded=False):
+            # FIXED: Calling without sheet_name now defaults correctly to 0
             df_raw = load_uploaded(uploaded_file)
             audit_df, df_work = build_audit(df_raw)
+        
+        if not audit_df.empty:
+            total_leak = audit_df["Amount ($)"].sum()
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Recoverable Cash", money_fmt(total_leak))
+            m2.metric("Leaks Found", int(audit_df["Count"].sum()))
+            m3.metric("Projected ROI", f"{(total_leak/15000):.1f}x" if total_leak > 0 else "0x")
 
-        total_leak = audit_df["Amount ($)"].sum()
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Recoverable Cash", money_fmt(total_leak))
-        m2.metric("Leaks Found", int(audit_df["Count"].sum()))
-        m3.metric("Projected ROI", f"{(total_leak/15000):.1f}x" if total_leak > 0 else "0x")
-
-        st.divider()
-        st.write("### 🔍 Audit Detail")
-        st.dataframe(audit_df, use_container_width=True, hide_index=True)
-
-        with st.expander("🧪 View Parsed Data"):
-            st.dataframe(df_raw.head(10))
+            st.divider()
+            st.write("### 🔍 Audit Detail")
+            st.dataframe(audit_df, use_container_width=True, hide_index=True)
+        else:
+            st.warning("No data found in the uploaded file.")
