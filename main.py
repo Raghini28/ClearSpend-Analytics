@@ -145,13 +145,46 @@ def build_audit(df_raw: pd.DataFrame):
 def forensic_bot(query, audit_df):
     query = query.lower()
     total = audit_df["Amount ($)"].sum() if not audit_df.empty else 0
-    if "total" in query:
-        return f"I have uncovered ${total:,.2f} in total recoverable leaks."
+    
+    # 1. General Recovery Query
+    if "total" in query or "how much" in query or "leak" in query:
+        if total > 0:
+            return f"My analysis has uncovered **${total:,.2f}** in potential recoveries across 5 validation categories."
+        else:
+            return "I haven't detected any financial leaks yet. Please upload a ledger and select the correct sheet to begin the audit."
+
+    # 2. Duplicate Invoice Explanation
+    elif "duplicate" in query:
+        return ("**Duplicate Invoice Logic:** I scan the unique 'Invoice ID' column for repeated values. "
+                "If the same ID appears twice, it suggests a double-payment error, which is the #1 source of cash leakage in AP.")
+
+    # 3. Price Creep Explanation
+    elif "creep" in query or "price" in query:
+        return ("**Price Creep Logic:** I perform a longitudinal analysis by comparing a vendor's unit price "
+                "on their earliest invoice versus their most recent one. This flags 'contract drift' where prices rise without notice.")
+
+    # 4. Inconsistency Explanation
     elif "inconsistency" in query or "variance" in query:
-        return "Pricing Inconsistency flags vendors who charge multiple different unit prices within the same ledger, suggesting a lack of contract compliance."
-    elif "creep" in query:
-        return "Price Creep tracks whether a vendor's unit price is trending upward over time."
-    return f"Hi {st.session_state['user_name']}! I'm running 5 audit checks. Ask me about Inconsistencies or Mismatches."
+        return ("**Pricing Inconsistency Logic:** Unlike Price Creep, this looks for 'Variance.' I flag vendors who charge "
+                "different unit prices for the same items within the same period, suggesting lack of centralized pricing control.")
+
+    # 5. Negative Leak Explanation
+    elif "negative" in query or "credit" in query:
+        return ("**Negative Leak Logic:** I isolate negative line amounts which represent unclaimed credits. "
+                "If these aren't applied to your balance, the vendor essentially keeps your refund as free cash.")
+
+    # 6. Total Mismatch Explanation
+    elif "mismatch" in query or "math" in query:
+        return ("**Total Mismatch Logic:** This is a mathematical integrity check. I compare the sum of individual line items "
+                "against the 'Grand Total' header. Mismatches often reveal hidden fees or manual entry errors.")
+
+    # 7. Greeting / Help
+    elif "hello" in query or "hi" in query or "help" in query:
+        return (f"Hi {st.session_state['user_name']}! I'm the ClearSpend AI. I can explain our **5 Validation Checks**: "
+                "Duplicates, Price Creep, Inconsistencies, Negative Leaks, and Total Mismatches. What would you like to know?")
+    
+    else:
+        return "I'm not sure about that. Try asking: 'What is a Total Mismatch?' or 'Explain Price Creep'."
 
 # ----------------------------
 # 6) Login / Signup UI
