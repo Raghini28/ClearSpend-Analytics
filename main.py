@@ -1,24 +1,25 @@
 import streamlit as st
 import pandas as pd
 import time
+import altair as alt
 
 # ----------------------------
 # 1) Page Configuration
 # ----------------------------
 st.set_page_config(page_title="ClearSpend Analytics", layout="wide", initial_sidebar_state="expanded")
 
-# --- UPDATED HIGH-CONTRAST STYLING ---
+# --- HIGH-CONTRAST PROFESSIONAL STYLING ---
 st.markdown("""
 <style>
-/* Main Background */
+/* Main Workspace Background */
 .stApp { background-color: #F8FAFC; } 
 
-/* Sidebar - Deep Navy for contrast */
+/* Sidebar - Deep Navy for maximum contrast */
 section[data-testid="stSidebar"] { 
     background-color: #0f172a !important; 
 }
 
-/* Sidebar Text & Brand */
+/* Sidebar Brand Text */
 .brand-text { 
     color: #F472B6 !important; 
     font-size: 34px !important; 
@@ -41,15 +42,14 @@ h1, h2, h3 {
     font-weight: 700 !important;
 }
 
-/* Sidebar Labels */
+/* Sidebar Labels and Text */
 [data-testid="stSidebar"] label, [data-testid="stSidebar"] p {
     color: #e2e8f0 !important;
 }
 
-/* Dataframe and Table Contrast */
-.stDataFrame {
-    border: 1px solid #e2e8f0;
-    border-radius: 8px;
+/* Chat Input Styling */
+.stChatInputContainer {
+    padding-bottom: 20px;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -73,7 +73,7 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 
 # ----------------------------
-# 3) Data Loading (Multi-Sheet Logic)
+# 3) Data Loading (Multi-Sheet Support)
 # ----------------------------
 def load_uploaded(uploaded_file):
     name = uploaded_file.name.lower()
@@ -176,47 +176,44 @@ def forensic_bot(query, audit_df):
     total = audit_df["Amount ($)"].sum() if not audit_df.empty else 0
     
     if "math" in query or "integrity" in query:
-        return "**Math Integrity Check:** Verifies that the sum of line items matches the grand total. Identifies hidden fees or entry errors."
+        return "**Math Integrity Check:** Compares line-item totals to the grand total. Identifies hidden fees or entry errors."
     elif "duplicate" in query:
-        return "**Duplicate Invoice:** Scans for identical Invoice IDs to prevent paying the same bill twice."
+        return "**Duplicate Invoice:** Scans for identical IDs to prevent double-payments."
     elif "creep" in query:
-        return "**Price Creep:** Tracks vendor unit price inflation over time."
-    elif "inconsistency" in query:
-        return "**Pricing Inconsistency:** Flags vendors charging different rates for the same item in the same period."
+        return "**Price Creep:** Tracks long-term unit price inflation per vendor."
+    elif "inconsistency" in query or "variance" in query:
+        return "**Pricing Inconsistency:** Flags vendors charging different rates for identical items in the same period."
     elif "negative" in query:
-        return "**Negative Leak:** Identifies unclaimed credit memos or refunds on the ledger."
+        return "**Negative Leak:** Recovers unclaimed credit memos or refunds."
     elif "total" in query or "leak" in query:
-        return f"Current results show **${total:,.2f}** in potential recoveries."
+        return f"Audit results show **${total:,.2f}** in potential recoveries."
     
-    return f"Hi {st.session_state['user_name']}! Ask me about Math Integrity, Price Creep, or Duplicates!"
+    return f"Hi {st.session_state['user_name']}! Ask me to explain any of our 5 Audit Checks."
 
 # ----------------------------
 # 6) UI Logic (Login / Logout)
 # ----------------------------
 if not st.session_state["logged_in"]:
     st.title("🛡️ ClearSpend Security Portal")
-    tab1, tab2 = st.tabs(["Login", "Create Account"])
-    with tab1:
-        u_in = st.text_input("Username")
-        p_in = st.text_input("Password", type="password")
+    t1, t2 = st.tabs(["Login", "Create Account"])
+    with t1:
+        u = st.text_input("Username")
+        p = st.text_input("Password", type="password")
         if st.button("Log In", use_container_width=True):
-            if u_in in st.session_state["accounts"] and st.session_state["accounts"][u_in]["pw"] == p_in:
+            if u in st.session_state["accounts"] and st.session_state["accounts"][u]["pw"] == p:
                 st.session_state["logged_in"] = True
-                st.session_state["user_name"] = st.session_state["accounts"][u_in]["name"]
-                st.session_state["org_name"] = st.session_state["accounts"][u_in]["org"]
+                st.session_state["user_name"] = st.session_state["accounts"][u]["name"]
+                st.session_state["org_name"] = st.session_state["accounts"][u]["org"]
                 st.rerun()
             else:
                 st.error("Invalid credentials.")
-    with tab2:
-        new_u = st.text_input("New Username")
-        new_p = st.text_input("New Password", type="password")
-        new_n = st.text_input("Full Name")
-        new_o = st.text_input("Company Name")
+    with t2:
+        nu, np, nn, no = st.text_input("New User"), st.text_input("New Pass", type="password"), st.text_input("Full Name"), st.text_input("Company")
         if st.button("Sign Up", use_container_width=True):
-            if new_u and new_p and new_n and new_o:
-                st.session_state["accounts"][new_u] = {"pw": new_p, "name": new_n, "org": new_o}
+            if nu and np and nn and no:
+                st.session_state["accounts"][nu] = {"pw": np, "name": nn, "org": no}
                 st.balloons()
-                st.success("Account created! Log in to start.")
+                st.success("Account created!")
 
 # ----------------------------
 # 7) Main Dashboard
@@ -255,27 +252,33 @@ else:
             st.session_state['last_audit'] = audit_df
         
         if not audit_df.empty:
-            m1, m2, m3 = st.columns(3)
+            c1, c2, c3 = st.columns(3)
             val = audit_df["Amount ($)"].sum()
-            m1.metric("Recoverable Cash", f"${val:,.2f}")
-            m2.metric("Audits Passed", "5/5")
-            m3.metric("ROI", f"{(val/15000):.1f}x")
+            c1.metric("Recoverable Cash", f"${val:,.2f}")
+            c2.metric("Audits Passed", "5/5")
+            c3.metric("ROI", f"{(val/15000):.1f}x")
 
             st.divider()
             col_f, col_c = st.columns([1, 1.5])
             with col_f:
                 st.write("### 🔍 Findings")
-                cats = st.multiselect("Categories", options=audit_df["Category"].unique(), default=audit_df["Category"].unique())
+                cats = st.multiselect("Filter View", options=audit_df["Category"].unique(), default=audit_df["Category"].unique())
                 filtered = audit_df[audit_df["Category"].isin(cats)]
                 st.dataframe(filtered, use_container_width=True, hide_index=True)
+            
             with col_c:
-                st.write("### 📈 Distribution")
-                st.bar_chart(data=filtered, x="Category", y="Amount ($)")
+                st.write("### 📈 Risk Distribution (Enhanced View)")
+                # Logarithmic Scale ensures small bars like "Pricing Inconsistency" are visible
+                chart = alt.Chart(filtered).mark_bar(color='#F472B6').encode(
+                    x=alt.X('Category:N', sort='-y', title="Audit Category"),
+                    y=alt.Y('Amount ($):Q', scale=alt.Scale(type='log'), title="Amount ($) - Log Scale"),
+                    tooltip=['Category', 'Amount ($)']
+                ).properties(height=400)
+                st.altair_chart(chart, use_container_width=True)
             
             st.divider()
             report_df = filtered.copy()
             report_df['Priority'] = report_df['Priority'].str.replace('🔴 ', '').str.replace('🟠 ', '').str.replace('🟣 ', '').str.replace('🟡 ', '')
-            csv = report_df.to_csv(index=False).encode('utf-8')
-            st.download_button(label="Download Recovery Report (CSV)", data=csv, file_name=f"ClearSpend_Audit.csv", mime='text/csv')
+            st.download_button(label="Download Report (CSV)", data=report_df.to_csv(index=False), file_name=f"ClearSpend_Audit.csv")
         else:
-            st.info("💡 Please upload a financial ledger to begin.")
+            st.info("💡 Please upload a ledger to begin.")
