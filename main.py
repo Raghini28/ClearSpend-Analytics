@@ -25,16 +25,20 @@ h1, h2, h3 { color: #0f172a !important; }
 """, unsafe_allow_html=True)
 
 # ----------------------------
-# 2) State Management
+# 2) State Management (Database Fix for Company Name)
 # ----------------------------
 if "logged_in" not in st.session_state:
     st.session_state["logged_in"] = False
 if "user_name" not in st.session_state:
-    st.session_state["user_name"] = "Raghini Kumar"
+    st.session_state["user_name"] = "Guest"
 if "org_name" not in st.session_state:
-    st.session_state["org_name"] = "UIC"
+    st.session_state["org_name"] = "Individual"
+
+# Store pw, real name, and organization
 if "accounts" not in st.session_state:
-    st.session_state["accounts"] = {"admin": "uic2026"}
+    st.session_state["accounts"] = {
+        "admin": {"pw": "uic2026", "name": "Raghini Kumar", "org": "UIC"},
+    }
 
 # ----------------------------
 # Helpers & Forensic Logic
@@ -107,29 +111,31 @@ if not st.session_state["logged_in"]:
     tab1, tab2 = st.tabs(["Login", "Create Account"])
     
     with tab1:
-        u = st.text_input("Username")
-        p = st.text_input("Password", type="password")
+        u_input = st.text_input("Username")
+        p_input = st.text_input("Password", type="password")
         if st.button("Log In"):
-            if u in st.session_state["accounts"] and st.session_state["accounts"][u] == p:
+            if u_input in st.session_state["accounts"] and st.session_state["accounts"][u_input]["pw"] == p_input:
                 st.session_state["logged_in"] = True
+                # Set session info from "database"
+                st.session_state["user_name"] = st.session_state["accounts"][u_input]["name"]
+                st.session_state["org_name"] = st.session_state["accounts"][u_input]["org"]
                 st.rerun()
             else:
                 st.error("Invalid credentials.")
                 
     with tab2:
-        st.subheader("Welcome to the ClearSpend Family! 🎈")
+        st.subheader("Join the ClearSpend Family! 🎈")
         new_u = st.text_input("New Username")
         new_p = st.text_input("New Password", type="password")
         new_n = st.text_input("Full Name")
+        new_o = st.text_input("Company Name (e.g. Amazon, UIC, etc.)")
         if st.button("Sign Up"):
-            if new_u and new_p:
-                st.session_state["accounts"][new_u] = new_p
-                st.session_state["user_name"] = new_n
-                # --- BALLOONS TRIGGERED HERE ---
+            if new_u and new_p and new_n and new_o:
+                st.session_state["accounts"][new_u] = {"pw": new_p, "name": new_n, "org": new_o}
                 st.balloons()
-                st.success(f"Account for {new_n} created! You can now log in.")
+                st.success(f"Account for {new_n} at {new_o} created! You can now log in.")
             else:
-                st.warning("Please enter a username and password.")
+                st.warning("Please fill out all fields.")
 
 # ----------------------------
 # 4) Main Dashboard
@@ -137,12 +143,16 @@ if not st.session_state["logged_in"]:
 else:
     with st.sidebar:
         st.markdown('<p class="brand-text">💎 ClearSpend</p>', unsafe_allow_html=True)
-        st.write(f"👤 **{st.session_state['user_name']}**")
+        st.write("---")
+        # Displaying User and Company
+        st.info(f"👤 **User:** {st.session_state['user_name']}")
+        st.warning(f"🏢 **Company:** {st.session_state['org_name']}")
+        st.write("---")
         if st.button("Log Out"):
             st.session_state["logged_in"] = False
             st.rerun()
 
-    st.title("📊 Executive Recovery Dashboard")
+    st.title(f"📊 {st.session_state['org_name']} Recovery Dashboard")
     f = st.file_uploader("Upload AP Ledger", type=["csv", "xlsx"])
 
     if f:
@@ -150,7 +160,6 @@ else:
             raw = load_uploaded(f)
             audit_df = build_audit(raw)
         
-        # KPI Row
         m1, m2, m3 = st.columns(3)
         total = audit_df["Amount ($)"].sum() if not audit_df.empty else 0
         m1.metric("Recoverable Cash", f"${total:,.2f}")
@@ -158,8 +167,6 @@ else:
         m3.metric("ROI", f"{(total/15000):.1f}x")
 
         st.divider()
-        
-        # FILTERS & CHARTS
         col_f, col_c = st.columns([1, 1.5])
         
         with col_f:
@@ -176,14 +183,7 @@ else:
             if not audit_df.empty and not filtered.empty:
                 st.bar_chart(data=filtered, x="Category", y="Amount ($)")
             
-        # DOWNLOAD SECTION
         if not audit_df.empty:
             st.divider()
-            st.write("### 📥 Export Evidence")
             csv = filtered.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="Download Recovery Report (CSV)",
-                data=csv,
-                file_name='ClearSpend_Recovery_Report.csv',
-                mime='text/csv'
-            )
+            st.download_button(label="Download Recovery Report (CSV)", data=csv, file_name='ClearSpend_Report.csv', mime='text/csv')
