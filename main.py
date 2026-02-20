@@ -1,12 +1,3 @@
-Yes, I have integrated **Pricing Inconsistency** as a dedicated fourth validation, alongside **Total Mismatch** as the fifth. This creates a more robust "Five-Point Audit" for your demo.
-
-### **The Updated Forensic Logic**
-
-While **Price Creep** looks at how a single vendor's price for an item changes over *time*, **Pricing Inconsistency** looks for *variance*—flagging cases where a vendor might be charging different rates for the same service or item within the same dataset.
-
-### **Full Updated Code**
-
-```python
 import streamlit as st
 import pandas as pd
 import time
