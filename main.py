@@ -25,20 +25,27 @@ h1, h2, h3 { color: #0f172a !important; }
 """, unsafe_allow_html=True)
 
 # ----------------------------
-# 2) State Management (Database Fix for Company Name)
+# 2) State Management (The Fix)
 # ----------------------------
 if "logged_in" not in st.session_state:
     st.session_state["logged_in"] = False
+
+# SAFETY RESET: If accounts is in the old string format, clear it
+if "accounts" in st.session_state:
+    first_val = list(st.session_state["accounts"].values())[0]
+    if isinstance(first_val, str):
+        del st.session_state["accounts"]
+
+# Initialize the new dictionary structure
+if "accounts" not in st.session_state:
+    st.session_state["accounts"] = {
+        "admin": {"pw": "uic2026", "name": "Raghini Kumar", "org": "UIC"}
+    }
+
 if "user_name" not in st.session_state:
     st.session_state["user_name"] = "Guest"
 if "org_name" not in st.session_state:
     st.session_state["org_name"] = "Individual"
-
-# Store pw, real name, and organization
-if "accounts" not in st.session_state:
-    st.session_state["accounts"] = {
-        "admin": {"pw": "uic2026", "name": "Raghini Kumar", "org": "UIC"},
-    }
 
 # ----------------------------
 # Helpers & Forensic Logic
@@ -114,26 +121,30 @@ if not st.session_state["logged_in"]:
         u_input = st.text_input("Username")
         p_input = st.text_input("Password", type="password")
         if st.button("Log In"):
-            if u_input in st.session_state["accounts"] and st.session_state["accounts"][u_input]["pw"] == p_input:
-                st.session_state["logged_in"] = True
-                # Set session info from "database"
-                st.session_state["user_name"] = st.session_state["accounts"][u_input]["name"]
-                st.session_state["org_name"] = st.session_state["accounts"][u_input]["org"]
-                st.rerun()
+            if u_input in st.session_state["accounts"]:
+                account_data = st.session_state["accounts"][u_input]
+                # Check if the stored data is a dict (new format)
+                if isinstance(account_data, dict) and account_data.get("pw") == p_input:
+                    st.session_state["logged_in"] = True
+                    st.session_state["user_name"] = account_data.get("name", "User")
+                    st.session_state["org_name"] = account_data.get("org", "Organization")
+                    st.rerun()
+                else:
+                    st.error("Invalid password.")
             else:
-                st.error("Invalid credentials.")
+                st.error("Username not found.")
                 
     with tab2:
         st.subheader("Join the ClearSpend Family! 🎈")
         new_u = st.text_input("New Username")
         new_p = st.text_input("New Password", type="password")
         new_n = st.text_input("Full Name")
-        new_o = st.text_input("Company Name (e.g. Amazon, UIC, etc.)")
+        new_o = st.text_input("Company Name")
         if st.button("Sign Up"):
             if new_u and new_p and new_n and new_o:
                 st.session_state["accounts"][new_u] = {"pw": new_p, "name": new_n, "org": new_o}
                 st.balloons()
-                st.success(f"Account for {new_n} at {new_o} created! You can now log in.")
+                st.success(f"Account for {new_n} at {new_o} created! Log in above.")
             else:
                 st.warning("Please fill out all fields.")
 
@@ -144,7 +155,6 @@ else:
     with st.sidebar:
         st.markdown('<p class="brand-text">💎 ClearSpend</p>', unsafe_allow_html=True)
         st.write("---")
-        # Displaying User and Company
         st.info(f"👤 **User:** {st.session_state['user_name']}")
         st.warning(f"🏢 **Company:** {st.session_state['org_name']}")
         st.write("---")
