@@ -25,7 +25,7 @@ h1, h2, h3 { color: #0f172a !important; }
 """, unsafe_allow_html=True)
 
 # ----------------------------
-# 2) State Management (Session Data)
+# 2) State Management
 # ----------------------------
 if "logged_in" not in st.session_state:
     st.session_state["logged_in"] = False
@@ -33,7 +33,6 @@ if "user_name" not in st.session_state:
     st.session_state["user_name"] = "Raghini Kumar"
 if "org_name" not in st.session_state:
     st.session_state["org_name"] = "UIC"
-# Simple mock DB for the demo
 if "accounts" not in st.session_state:
     st.session_state["accounts"] = {"admin": "uic2026"}
 
@@ -101,7 +100,7 @@ def build_audit(df_raw: pd.DataFrame):
     return pd.DataFrame(issues)
 
 # ----------------------------
-# 3) Login & Create Account UI
+# 3) UI Logic (Login/Signup)
 # ----------------------------
 if not st.session_state["logged_in"]:
     st.title("🛡️ ClearSpend Security Portal")
@@ -118,13 +117,19 @@ if not st.session_state["logged_in"]:
                 st.error("Invalid credentials.")
                 
     with tab2:
+        st.subheader("Welcome to the ClearSpend Family! 🎈")
         new_u = st.text_input("New Username")
         new_p = st.text_input("New Password", type="password")
         new_n = st.text_input("Full Name")
         if st.button("Sign Up"):
-            st.session_state["accounts"][new_u] = new_p
-            st.session_state["user_name"] = new_n
-            st.success("Account created! You can now log in.")
+            if new_u and new_p:
+                st.session_state["accounts"][new_u] = new_p
+                st.session_state["user_name"] = new_n
+                # --- BALLOONS TRIGGERED HERE ---
+                st.balloons()
+                st.success(f"Account for {new_n} created! You can now log in.")
+            else:
+                st.warning("Please enter a username and password.")
 
 # ----------------------------
 # 4) Main Dashboard
@@ -159,13 +164,26 @@ else:
         
         with col_f:
             st.write("### 🔍 Filters")
-            cats = st.multiselect("Select Categories", options=audit_df["Category"].unique(), default=audit_df["Category"].unique())
-            filtered = audit_df[audit_df["Category"].isin(cats)]
-            st.dataframe(filtered, use_container_width=True, hide_index=True)
+            if not audit_df.empty:
+                cats = st.multiselect("Select Categories", options=audit_df["Category"].unique(), default=audit_df["Category"].unique())
+                filtered = audit_df[audit_df["Category"].isin(cats)]
+                st.dataframe(filtered, use_container_width=True, hide_index=True)
+            else:
+                st.info("No leaks detected.")
 
         with col_c:
             st.write("### 📈 Leak Distribution")
-            if not filtered.empty:
+            if not audit_df.empty and not filtered.empty:
                 st.bar_chart(data=filtered, x="Category", y="Amount ($)")
-            else:
-                st.info("Select a category to view chart.")
+            
+        # DOWNLOAD SECTION
+        if not audit_df.empty:
+            st.divider()
+            st.write("### 📥 Export Evidence")
+            csv = filtered.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="Download Recovery Report (CSV)",
+                data=csv,
+                file_name='ClearSpend_Recovery_Report.csv',
+                mime='text/csv'
+            )
