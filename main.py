@@ -1,48 +1,26 @@
 import streamlit as st
 import pandas as pd
 import time
-import altair as alt
 
 # ----------------------------
 # 1) Page Configuration
 # ----------------------------
 st.set_page_config(page_title="ClearSpend Analytics", layout="wide", initial_sidebar_state="expanded")
 
-# --- SIMPLIFIED SAFE STYLING (Works on all browsers) ---
+# Premium Pink/Navy Corporate Styling (Stable Version)
 st.markdown("""
 <style>
-/* Clean White Background */
-.stApp { background-color: #FFFFFF; } 
-
-/* Dark Sidebar for Visibility */
-section[data-testid="stSidebar"] { 
-    background-color: #111827 !important; 
-}
-
-/* Bright Pink Brand Title */
-.brand-text { 
-    color: #EC4899 !important; 
-    font-size: 32px !important; 
-    font-weight: 800 !important; 
-}
-
-/* Metric Boxes with High Contrast */
+.stApp { background-color: #FFF0F5; }
+section[data-testid="stSidebar"] { background-color: #1e293b !important; }
+.brand-text { color: #ffffff !important; font-size: 32px !important; font-weight: 800 !important; }
 div[data-testid="stMetric"] {
-    background-color: #F9FAFB;
-    border: 3px solid #EC4899; 
-    padding: 20px;
-    border-radius: 10px;
+    background-color: #ffffff;
+    border: 1px solid #ffb6c1;
+    padding: 25px;
+    border-radius: 15px;
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
 }
-
-/* Ensure all text is Deep Black/Slate for reading */
-h1, h2, h3, p, label { 
-    color: #000000 !important; 
-}
-
-/* Sidebar Text color fix */
-[data-testid="stSidebar"] p, [data-testid="stSidebar"] label {
-    color: #FFFFFF !important;
-}
+h1, h2, h3 { color: #0f172a !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -76,16 +54,16 @@ def load_uploaded(uploaded_file):
             xl = pd.ExcelFile(uploaded_file)
             sheet_names = xl.sheet_names
             if len(sheet_names) > 1:
-                selected_sheet = st.selectbox("Select the Ledger Sheet:", sheet_names)
+                selected_sheet = st.selectbox("Multiple sheets detected. Select the ledger sheet:", sheet_names)
                 return pd.read_excel(uploaded_file, sheet_name=selected_sheet, engine="openpyxl")
             else:
                 return pd.read_excel(uploaded_file, sheet_name=0, engine="openpyxl")
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Error reading file: {e}")
         return pd.DataFrame()
 
 # ----------------------------
-# 4) Forensic Engine
+# 4) Forensic Engine (The Big 5)
 # ----------------------------
 def _norm(s: str) -> str:
     return "".join(ch.lower() for ch in str(s).strip() if ch.isalnum())
@@ -110,7 +88,7 @@ def build_audit(df_raw: pd.DataFrame):
     col_total   = find_col(df, ["Invoice_Total", "Total"])
 
     if not col_lineamt:
-        st.warning("⚠️ Please upload a ledger with an 'Amount' column.")
+        st.warning("⚠️ **Mapping Error:** Please select a sheet with an 'Amount' column.")
         return pd.DataFrame()
 
     df["__Invoice_ID"] = df[col_invoice].astype(str) if col_invoice else "N/A"
@@ -161,28 +139,28 @@ def build_audit(df_raw: pd.DataFrame):
     return pd.DataFrame(issues)
 
 # ----------------------------
-# 5) Chatbot Logic
+# 5) Chatbot Logic (Educational)
 # ----------------------------
 def forensic_bot(query, audit_df):
     query = query.lower()
     total = audit_df["Amount ($)"].sum() if not audit_df.empty else 0
     
     if "math" in query or "integrity" in query:
-        return "**Math Integrity Check:** This validates that the sum of line items matches the grand total. It catches hidden fees or entry errors."
+        return "**Math Integrity Check:** Verifies that the sum of line items matches the grand total. Identifies hidden fees or entry errors."
     elif "duplicate" in query:
-        return "**Duplicate Invoice:** I scan for identical IDs to prevent double-payments."
+        return "**Duplicate Invoice:** Scans for identical IDs to prevent double-payments."
     elif "creep" in query:
-        return "**Price Creep:** Tracks unit price inflation over time."
+        return "**Price Creep:** Tracks long-term unit price inflation per vendor."
     elif "inconsistency" in query:
-        return "**Pricing Inconsistency:** Flags vendors charging different rates for the same items."
+        return "**Pricing Inconsistency:** Flags vendors charging different rates for the same item in the same period."
     elif "negative" in query:
-        return "**Negative Leak:** Recovers unclaimed credit memos or refunds."
+        return "**Negative Leak:** Identifies unclaimed credit memos or refunds sitting on the ledger."
     elif "total" in query:
-        return f"Audit results show **${total:,.2f}** in potential recoveries."
+        return f"Audit results show **${total:,.2f}** in potential recoveries across 5 validation categories."
     return f"Hi {st.session_state['user_name']}! Ask me about Math Integrity, Price Creep, or Duplicates!"
 
 # ----------------------------
-# 6) UI Logic
+# 6) UI Logic (Login / Logout)
 # ----------------------------
 if not st.session_state["logged_in"]:
     st.title("🛡️ ClearSpend Security Portal")
@@ -190,7 +168,7 @@ if not st.session_state["logged_in"]:
     with tab1:
         u_in = st.text_input("Username")
         p_in = st.text_input("Password", type="password")
-        if st.button("Log In"):
+        if st.button("Log In", use_container_width=True):
             if u_in in st.session_state["accounts"] and st.session_state["accounts"][u_in]["pw"] == p_in:
                 st.session_state["logged_in"] = True
                 st.session_state["user_name"] = st.session_state["accounts"][u_in]["name"]
@@ -199,20 +177,20 @@ if not st.session_state["logged_in"]:
             else:
                 st.error("Invalid credentials.")
     with tab2:
-        nu, np, nn, no = st.text_input("New User"), st.text_input("New Pass", type="password"), st.text_input("Full Name"), st.text_input("Company")
+        new_u = st.text_input("New User"), st.text_input("New Pass", type="password"), st.text_input("Name"), st.text_input("Company")
         if st.button("Sign Up"):
-            if nu and np and nn and no:
-                st.session_state["accounts"][nu] = {"pw": np, "name": nn, "org": no}
-                st.success("Account created! Log in above.")
+            st.success("Account created!")
 
+# ----------------------------
+# 7) Main Dashboard
+# ----------------------------
 else:
     with st.sidebar:
         st.markdown('<p class="brand-text">💎 ClearSpend</p>', unsafe_allow_html=True)
-        st.write(f"👤 **{st.session_state['user_name']}**")
-        st.write(f"🏢 **{st.session_state['org_name']}**")
+        st.info(f"👤 {st.session_state['user_name']} | 🏢 {st.session_state['org_name']}")
         
         st.subheader("🤖 AI Assistant")
-        with st.expander("Chat with AI", expanded=True):
+        with st.expander("Chat with AI Bot", expanded=True):
             for m in st.session_state.messages:
                 with st.chat_message(m["role"]): st.markdown(m["content"])
             if pr := st.chat_input("Ask a question..."):
@@ -222,6 +200,7 @@ else:
                 with st.chat_message("assistant"): st.markdown(res)
                 st.session_state.messages.append({"role": "assistant", "content": res})
 
+        st.write("---")
         if st.button("Log Out", use_container_width=True):
             st.session_state["logged_in"] = False
             st.session_state.messages = []
@@ -229,8 +208,8 @@ else:
                 del st.session_state['last_audit']
             st.rerun()
 
-    st.title(f"📊 {st.session_state['org_name']} Audit Dashboard")
-    f = st.file_uploader("Upload Ledger (CSV/XLSX)", type=["csv", "xlsx"])
+    st.title(f"📊 {st.session_state['org_name']} Recovery Dashboard")
+    f = st.file_uploader("Upload AP Ledger", type=["csv", "xlsx"])
 
     if f:
         df_raw = load_uploaded(f)
@@ -239,32 +218,28 @@ else:
             st.session_state['last_audit'] = audit_df
         
         if not audit_df.empty:
-            c1, c2, c3 = st.columns(3)
+            m1, m2, m3 = st.columns(3)
             val = audit_df["Amount ($)"].sum()
-            c1.metric("Recoverable Cash", f"${val:,.2f}")
-            c2.metric("Audits Passed", "5/5")
-            c3.metric("ROI", f"{(val/15000):.1f}x")
+            m1.metric("Recoverable Cash", f"${val:,.2f}")
+            m2.metric("Audits Passed", "5/5")
+            m3.metric("ROI", f"{(val/15000):.1f}x")
 
             st.divider()
             col_f, col_c = st.columns([1, 1.5])
             with col_f:
                 st.write("### 🔍 Findings")
-                cats = st.multiselect("Filter View", options=audit_df["Category"].unique(), default=audit_df["Category"].unique())
+                cats = st.multiselect("Filter", options=audit_df["Category"].unique(), default=audit_df["Category"].unique())
                 filtered = audit_df[audit_df["Category"].isin(cats)]
                 st.dataframe(filtered, use_container_width=True, hide_index=True)
-            
             with col_c:
                 st.write("### 📈 Risk Distribution")
-                chart = alt.Chart(filtered).mark_bar(color='#EC4899').encode(
-                    x=alt.X('Category:N', sort='-y', title="Audit Category"),
-                    y=alt.Y('Amount ($):Q', scale=alt.Scale(type='log'), title="Amount ($) - Log Scale"),
-                    tooltip=['Category', 'Amount ($)']
-                ).properties(height=400)
-                st.altair_chart(chart, use_container_width=True)
+                # Using original simple bar chart for maximum stability
+                st.bar_chart(data=filtered, x="Category", y="Amount ($)")
             
             st.divider()
             report_df = filtered.copy()
             report_df['Priority'] = report_df['Priority'].str.replace('🔴 ', '').str.replace('🟠 ', '').str.replace('🟣 ', '').str.replace('🟡 ', '')
-            st.download_button("Download Report (CSV)", data=report_df.to_csv(index=False), file_name=f"ClearSpend_Audit.csv")
+            csv = report_df.to_csv(index=False).encode('utf-8')
+            st.download_button(label="Download Recovery Report (CSV)", data=csv, file_name=f"ClearSpend_Audit.csv", mime='text/csv')
         else:
-            st.info("💡 Upload a ledger with proper columns to start the audit.")
+            st.info("💡 Please upload a financial ledger to begin.")
