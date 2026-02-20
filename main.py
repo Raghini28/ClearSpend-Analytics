@@ -8,48 +8,40 @@ import altair as alt
 # ----------------------------
 st.set_page_config(page_title="ClearSpend Analytics", layout="wide", initial_sidebar_state="expanded")
 
-# --- HIGH-CONTRAST PROFESSIONAL STYLING ---
+# --- SIMPLIFIED SAFE STYLING (Works on all browsers) ---
 st.markdown("""
 <style>
-/* Main Workspace Background */
-.stApp { background-color: #F8FAFC; } 
+/* Clean White Background */
+.stApp { background-color: #FFFFFF; } 
 
-/* Sidebar - Deep Navy for maximum contrast */
+/* Dark Sidebar for Visibility */
 section[data-testid="stSidebar"] { 
-    background-color: #0f172a !important; 
+    background-color: #111827 !important; 
 }
 
-/* Sidebar Brand Text */
+/* Bright Pink Brand Title */
 .brand-text { 
-    color: #F472B6 !important; 
-    font-size: 34px !important; 
+    color: #EC4899 !important; 
+    font-size: 32px !important; 
     font-weight: 800 !important; 
-    margin-bottom: 20px;
 }
 
-/* Metric Cards - White background with strong pink border */
+/* Metric Boxes with High Contrast */
 div[data-testid="stMetric"] {
-    background-color: #ffffff;
-    border: 2px solid #F472B6; 
-    padding: 25px;
-    border-radius: 12px;
-    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    background-color: #F9FAFB;
+    border: 3px solid #EC4899; 
+    padding: 20px;
+    border-radius: 10px;
 }
 
-/* Headers - Deep Slate for readability */
-h1, h2, h3 { 
-    color: #1e293b !important; 
-    font-weight: 700 !important;
+/* Ensure all text is Deep Black/Slate for reading */
+h1, h2, h3, p, label { 
+    color: #000000 !important; 
 }
 
-/* Sidebar Labels and Text */
-[data-testid="stSidebar"] label, [data-testid="stSidebar"] p {
-    color: #e2e8f0 !important;
-}
-
-/* Chat Input Styling */
-.stChatInputContainer {
-    padding-bottom: 20px;
+/* Sidebar Text color fix */
+[data-testid="stSidebar"] p, [data-testid="stSidebar"] label {
+    color: #FFFFFF !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -73,7 +65,7 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 
 # ----------------------------
-# 3) Data Loading (Multi-Sheet Support)
+# 3) Data Loading
 # ----------------------------
 def load_uploaded(uploaded_file):
     name = uploaded_file.name.lower()
@@ -84,16 +76,16 @@ def load_uploaded(uploaded_file):
             xl = pd.ExcelFile(uploaded_file)
             sheet_names = xl.sheet_names
             if len(sheet_names) > 1:
-                selected_sheet = st.selectbox("Multiple sheets detected. Select the ledger sheet:", sheet_names)
+                selected_sheet = st.selectbox("Select the Ledger Sheet:", sheet_names)
                 return pd.read_excel(uploaded_file, sheet_name=selected_sheet, engine="openpyxl")
             else:
                 return pd.read_excel(uploaded_file, sheet_name=0, engine="openpyxl")
     except Exception as e:
-        st.error(f"Error reading file: {e}")
+        st.error(f"Error: {e}")
         return pd.DataFrame()
 
 # ----------------------------
-# 4) Forensic Engine (The 5-Point Audit)
+# 4) Forensic Engine
 # ----------------------------
 def _norm(s: str) -> str:
     return "".join(ch.lower() for ch in str(s).strip() if ch.isalnum())
@@ -118,7 +110,7 @@ def build_audit(df_raw: pd.DataFrame):
     col_total   = find_col(df, ["Invoice_Total", "Total"])
 
     if not col_lineamt:
-        st.warning("⚠️ **Mapping Error:** Please select a sheet with an 'Amount' column.")
+        st.warning("⚠️ Please upload a ledger with an 'Amount' column.")
         return pd.DataFrame()
 
     df["__Invoice_ID"] = df[col_invoice].astype(str) if col_invoice else "N/A"
@@ -176,55 +168,51 @@ def forensic_bot(query, audit_df):
     total = audit_df["Amount ($)"].sum() if not audit_df.empty else 0
     
     if "math" in query or "integrity" in query:
-        return "**Math Integrity Check:** Compares line-item totals to the grand total. Identifies hidden fees or entry errors."
+        return "**Math Integrity Check:** This validates that the sum of line items matches the grand total. It catches hidden fees or entry errors."
     elif "duplicate" in query:
-        return "**Duplicate Invoice:** Scans for identical IDs to prevent double-payments."
+        return "**Duplicate Invoice:** I scan for identical IDs to prevent double-payments."
     elif "creep" in query:
-        return "**Price Creep:** Tracks long-term unit price inflation per vendor."
-    elif "inconsistency" in query or "variance" in query:
-        return "**Pricing Inconsistency:** Flags vendors charging different rates for identical items in the same period."
+        return "**Price Creep:** Tracks unit price inflation over time."
+    elif "inconsistency" in query:
+        return "**Pricing Inconsistency:** Flags vendors charging different rates for the same items."
     elif "negative" in query:
         return "**Negative Leak:** Recovers unclaimed credit memos or refunds."
-    elif "total" in query or "leak" in query:
+    elif "total" in query:
         return f"Audit results show **${total:,.2f}** in potential recoveries."
-    
-    return f"Hi {st.session_state['user_name']}! Ask me to explain any of our 5 Audit Checks."
+    return f"Hi {st.session_state['user_name']}! Ask me about Math Integrity, Price Creep, or Duplicates!"
 
 # ----------------------------
-# 6) UI Logic (Login / Logout)
+# 6) UI Logic
 # ----------------------------
 if not st.session_state["logged_in"]:
     st.title("🛡️ ClearSpend Security Portal")
-    t1, t2 = st.tabs(["Login", "Create Account"])
-    with t1:
-        u = st.text_input("Username")
-        p = st.text_input("Password", type="password")
-        if st.button("Log In", use_container_width=True):
-            if u in st.session_state["accounts"] and st.session_state["accounts"][u]["pw"] == p:
+    tab1, tab2 = st.tabs(["Login", "Create Account"])
+    with tab1:
+        u_in = st.text_input("Username")
+        p_in = st.text_input("Password", type="password")
+        if st.button("Log In"):
+            if u_in in st.session_state["accounts"] and st.session_state["accounts"][u_in]["pw"] == p_in:
                 st.session_state["logged_in"] = True
-                st.session_state["user_name"] = st.session_state["accounts"][u]["name"]
-                st.session_state["org_name"] = st.session_state["accounts"][u]["org"]
+                st.session_state["user_name"] = st.session_state["accounts"][u_in]["name"]
+                st.session_state["org_name"] = st.session_state["accounts"][u_in]["org"]
                 st.rerun()
             else:
                 st.error("Invalid credentials.")
-    with t2:
+    with tab2:
         nu, np, nn, no = st.text_input("New User"), st.text_input("New Pass", type="password"), st.text_input("Full Name"), st.text_input("Company")
-        if st.button("Sign Up", use_container_width=True):
+        if st.button("Sign Up"):
             if nu and np and nn and no:
                 st.session_state["accounts"][nu] = {"pw": np, "name": nn, "org": no}
-                st.balloons()
-                st.success("Account created!")
+                st.success("Account created! Log in above.")
 
-# ----------------------------
-# 7) Main Dashboard
-# ----------------------------
 else:
     with st.sidebar:
         st.markdown('<p class="brand-text">💎 ClearSpend</p>', unsafe_allow_html=True)
-        st.info(f"👤 {st.session_state['user_name']} | 🏢 {st.session_state['org_name']}")
+        st.write(f"👤 **{st.session_state['user_name']}**")
+        st.write(f"🏢 **{st.session_state['org_name']}**")
         
         st.subheader("🤖 AI Assistant")
-        with st.expander("Chat with Audit Bot", expanded=True):
+        with st.expander("Chat with AI", expanded=True):
             for m in st.session_state.messages:
                 with st.chat_message(m["role"]): st.markdown(m["content"])
             if pr := st.chat_input("Ask a question..."):
@@ -234,7 +222,6 @@ else:
                 with st.chat_message("assistant"): st.markdown(res)
                 st.session_state.messages.append({"role": "assistant", "content": res})
 
-        st.write("---")
         if st.button("Log Out", use_container_width=True):
             st.session_state["logged_in"] = False
             st.session_state.messages = []
@@ -242,8 +229,8 @@ else:
                 del st.session_state['last_audit']
             st.rerun()
 
-    st.title(f"📊 {st.session_state['org_name']} Recovery Dashboard")
-    f = st.file_uploader("Upload AP Ledger", type=["csv", "xlsx"])
+    st.title(f"📊 {st.session_state['org_name']} Audit Dashboard")
+    f = st.file_uploader("Upload Ledger (CSV/XLSX)", type=["csv", "xlsx"])
 
     if f:
         df_raw = load_uploaded(f)
@@ -267,9 +254,8 @@ else:
                 st.dataframe(filtered, use_container_width=True, hide_index=True)
             
             with col_c:
-                st.write("### 📈 Risk Distribution (Enhanced View)")
-                # Logarithmic Scale ensures small bars like "Pricing Inconsistency" are visible
-                chart = alt.Chart(filtered).mark_bar(color='#F472B6').encode(
+                st.write("### 📈 Risk Distribution")
+                chart = alt.Chart(filtered).mark_bar(color='#EC4899').encode(
                     x=alt.X('Category:N', sort='-y', title="Audit Category"),
                     y=alt.Y('Amount ($):Q', scale=alt.Scale(type='log'), title="Amount ($) - Log Scale"),
                     tooltip=['Category', 'Amount ($)']
@@ -279,6 +265,6 @@ else:
             st.divider()
             report_df = filtered.copy()
             report_df['Priority'] = report_df['Priority'].str.replace('🔴 ', '').str.replace('🟠 ', '').str.replace('🟣 ', '').str.replace('🟡 ', '')
-            st.download_button(label="Download Report (CSV)", data=report_df.to_csv(index=False), file_name=f"ClearSpend_Audit.csv")
+            st.download_button("Download Report (CSV)", data=report_df.to_csv(index=False), file_name=f"ClearSpend_Audit.csv")
         else:
-            st.info("💡 Please upload a ledger to begin.")
+            st.info("💡 Upload a ledger with proper columns to start the audit.")
