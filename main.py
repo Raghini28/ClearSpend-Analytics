@@ -7,20 +7,50 @@ import time
 # ----------------------------
 st.set_page_config(page_title="ClearSpend Analytics", layout="wide", initial_sidebar_state="expanded")
 
-# Premium Pink/Navy Corporate Styling
+# --- UPDATED HIGH-CONTRAST STYLING ---
 st.markdown("""
 <style>
-.stApp { background-color: #FFF0F5; }
-section[data-testid="stSidebar"] { background-color: #1e293b !important; }
-.brand-text { color: #ffffff !important; font-size: 32px !important; font-weight: 800 !important; }
+/* Main Background */
+.stApp { background-color: #F8FAFC; } 
+
+/* Sidebar - Deep Navy for contrast */
+section[data-testid="stSidebar"] { 
+    background-color: #0f172a !important; 
+}
+
+/* Sidebar Text & Brand */
+.brand-text { 
+    color: #F472B6 !important; 
+    font-size: 34px !important; 
+    font-weight: 800 !important; 
+    margin-bottom: 20px;
+}
+
+/* Metric Cards - White background with strong pink border */
 div[data-testid="stMetric"] {
     background-color: #ffffff;
-    border: 1px solid #ffb6c1;
+    border: 2px solid #F472B6; 
     padding: 25px;
-    border-radius: 15px;
-    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+    border-radius: 12px;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
 }
-h1, h2, h3 { color: #0f172a !important; }
+
+/* Headers - Deep Slate for readability */
+h1, h2, h3 { 
+    color: #1e293b !important; 
+    font-weight: 700 !important;
+}
+
+/* Sidebar Labels */
+[data-testid="stSidebar"] label, [data-testid="stSidebar"] p {
+    color: #e2e8f0 !important;
+}
+
+/* Dataframe and Table Contrast */
+.stDataFrame {
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -43,7 +73,7 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 
 # ----------------------------
-# 3) Data Loading (Multi-Sheet Support)
+# 3) Data Loading (Multi-Sheet Logic)
 # ----------------------------
 def load_uploaded(uploaded_file):
     name = uploaded_file.name.lower()
@@ -63,7 +93,7 @@ def load_uploaded(uploaded_file):
         return pd.DataFrame()
 
 # ----------------------------
-# 4) Forensic Engine (5 Validations)
+# 4) Forensic Engine (The 5-Point Audit)
 # ----------------------------
 def _norm(s: str) -> str:
     return "".join(ch.lower() for ch in str(s).strip() if ch.isalnum())
@@ -88,7 +118,7 @@ def build_audit(df_raw: pd.DataFrame):
     col_total   = find_col(df, ["Invoice_Total", "Total"])
 
     if not col_lineamt:
-        st.warning("⚠️ **Mapping Error:** Couldn't find an 'Amount' column.")
+        st.warning("⚠️ **Mapping Error:** Please select a sheet with an 'Amount' column.")
         return pd.DataFrame()
 
     df["__Invoice_ID"] = df[col_invoice].astype(str) if col_invoice else "N/A"
@@ -123,19 +153,18 @@ def build_audit(df_raw: pd.DataFrame):
     if not negs.empty:
         issues.append({"Category": "Negative Leak", "Amount ($)": float(negs["__Line_Amount"].abs().sum()), "Count": len(negs), "Priority": "🟣 High"})
 
-    # 4. Pricing Inconsistency (NEW)
+    # 4. Pricing Inconsistency
     if col_unit:
-        # Check if same vendor has multiple unit prices for items
         variance = df.groupby("__Vendor")["__Unit_Price"].nunique()
         inconsistent = variance[variance > 1].index
         if not inconsistent.empty:
             issues.append({"Category": "Pricing Inconsistency", "Amount ($)": 750.00 * len(inconsistent), "Count": len(inconsistent), "Priority": "🟡 Medium"})
 
-    # 5. Total Mismatch (NEW)
+    # 5. Math Integrity Check
     if col_total:
         mismatch = df[df["__Line_Amount"] != df["__Invoice_Total"]]
         if not mismatch.empty:
-            issues.append({"Category": "Total Mismatch", "Amount ($)": float(mismatch["__Line_Amount"].sum() * 0.1), "Count": len(mismatch), "Priority": "🔴 Critical"})
+            issues.append({"Category": "Math Integrity Check", "Amount ($)": float(mismatch["__Line_Amount"].sum() * 0.1), "Count": len(mismatch), "Priority": "🔴 Critical"})
 
     return pd.DataFrame(issues)
 
@@ -146,48 +175,23 @@ def forensic_bot(query, audit_df):
     query = query.lower()
     total = audit_df["Amount ($)"].sum() if not audit_df.empty else 0
     
-    # 1. General Recovery Query
-    if "total" in query or "how much" in query or "leak" in query:
-        if total > 0:
-            return f"My analysis has uncovered **${total:,.2f}** in potential recoveries across 5 validation categories."
-        else:
-            return "I haven't detected any financial leaks yet. Please upload a ledger and select the correct sheet to begin the audit."
-
-    # 2. Duplicate Invoice Explanation
+    if "math" in query or "integrity" in query:
+        return "**Math Integrity Check:** Verifies that the sum of line items matches the grand total. Identifies hidden fees or entry errors."
     elif "duplicate" in query:
-        return ("**Duplicate Invoice Logic:** I scan the unique 'Invoice ID' column for repeated values. "
-                "If the same ID appears twice, it suggests a double-payment error, which is the #1 source of cash leakage in AP.")
-
-    # 3. Price Creep Explanation
-    elif "creep" in query or "price" in query:
-        return ("**Price Creep Logic:** I perform a longitudinal analysis by comparing a vendor's unit price "
-                "on their earliest invoice versus their most recent one. This flags 'contract drift' where prices rise without notice.")
-
-    # 4. Inconsistency Explanation
-    elif "inconsistency" in query or "variance" in query:
-        return ("**Pricing Inconsistency Logic:** Unlike Price Creep, this looks for 'Variance.' I flag vendors who charge "
-                "different unit prices for the same items within the same period, suggesting lack of centralized pricing control.")
-
-    # 5. Negative Leak Explanation
-    elif "negative" in query or "credit" in query:
-        return ("**Negative Leak Logic:** I isolate negative line amounts which represent unclaimed credits. "
-                "If these aren't applied to your balance, the vendor essentially keeps your refund as free cash.")
-
-    # 6. Total Mismatch Explanation
-    elif "mismatch" in query or "math" in query:
-        return ("**Total Mismatch Logic:** This is a mathematical integrity check. I compare the sum of individual line items "
-                "against the 'Grand Total' header. Mismatches often reveal hidden fees or manual entry errors.")
-
-    # 7. Greeting / Help
-    elif "hello" in query or "hi" in query or "help" in query:
-        return (f"Hi {st.session_state['user_name']}! I'm the ClearSpend AI. I can explain our **5 Validation Checks**: "
-                "Duplicates, Price Creep, Inconsistencies, Negative Leaks, and Total Mismatches. What would you like to know?")
+        return "**Duplicate Invoice:** Scans for identical Invoice IDs to prevent paying the same bill twice."
+    elif "creep" in query:
+        return "**Price Creep:** Tracks vendor unit price inflation over time."
+    elif "inconsistency" in query:
+        return "**Pricing Inconsistency:** Flags vendors charging different rates for the same item in the same period."
+    elif "negative" in query:
+        return "**Negative Leak:** Identifies unclaimed credit memos or refunds on the ledger."
+    elif "total" in query or "leak" in query:
+        return f"Current results show **${total:,.2f}** in potential recoveries."
     
-    else:
-        return "I'm not sure about that. Try asking: 'What is a Total Mismatch?' or 'Explain Price Creep'."
+    return f"Hi {st.session_state['user_name']}! Ask me about Math Integrity, Price Creep, or Duplicates!"
 
 # ----------------------------
-# 6) Login / Signup UI
+# 6) UI Logic (Login / Logout)
 # ----------------------------
 if not st.session_state["logged_in"]:
     st.title("🛡️ ClearSpend Security Portal")
@@ -220,17 +224,13 @@ if not st.session_state["logged_in"]:
 else:
     with st.sidebar:
         st.markdown('<p class="brand-text">💎 ClearSpend</p>', unsafe_allow_html=True)
-        st.write("---")
-        st.info(f"👤 **User:** {st.session_state['user_name']}")
-        st.warning(f"🏢 **Company:** {st.session_state['org_name']}")
-        st.write("---")
+        st.info(f"👤 {st.session_state['user_name']} | 🏢 {st.session_state['org_name']}")
         
-        # Chatbot
         st.subheader("🤖 AI Assistant")
-        with st.expander("Chat with Audit Bot"):
+        with st.expander("Chat with Audit Bot", expanded=True):
             for m in st.session_state.messages:
                 with st.chat_message(m["role"]): st.markdown(m["content"])
-            if pr := st.chat_input("Ask something..."):
+            if pr := st.chat_input("Ask a question..."):
                 st.session_state.messages.append({"role": "user", "content": pr})
                 with st.chat_message("user"): st.markdown(pr)
                 res = forensic_bot(pr, st.session_state.get('last_audit', pd.DataFrame()))
@@ -238,9 +238,11 @@ else:
                 st.session_state.messages.append({"role": "assistant", "content": res})
 
         st.write("---")
-        if st.button("Log Out"):
+        if st.button("Log Out", use_container_width=True):
             st.session_state["logged_in"] = False
             st.session_state.messages = []
+            if 'last_audit' in st.session_state:
+                del st.session_state['last_audit']
             st.rerun()
 
     st.title(f"📊 {st.session_state['org_name']} Recovery Dashboard")
@@ -273,7 +275,6 @@ else:
             st.divider()
             report_df = filtered.copy()
             report_df['Priority'] = report_df['Priority'].str.replace('🔴 ', '').str.replace('🟠 ', '').str.replace('🟣 ', '').str.replace('🟡 ', '')
-            
             csv = report_df.to_csv(index=False).encode('utf-8')
             st.download_button(label="Download Recovery Report (CSV)", data=csv, file_name=f"ClearSpend_Audit.csv", mime='text/csv')
         else:
