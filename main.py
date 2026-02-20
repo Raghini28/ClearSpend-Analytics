@@ -25,18 +25,11 @@ h1, h2, h3 { color: #0f172a !important; }
 """, unsafe_allow_html=True)
 
 # ----------------------------
-# 2) State Management (The Fix)
+# 2) State Management
 # ----------------------------
 if "logged_in" not in st.session_state:
     st.session_state["logged_in"] = False
 
-# SAFETY RESET: If accounts is in the old string format, clear it
-if "accounts" in st.session_state:
-    first_val = list(st.session_state["accounts"].values())[0]
-    if isinstance(first_val, str):
-        del st.session_state["accounts"]
-
-# Initialize the new dictionary structure
 if "accounts" not in st.session_state:
     st.session_state["accounts"] = {
         "admin": {"pw": "uic2026", "name": "Raghini Kumar", "org": "UIC"}
@@ -46,9 +39,34 @@ if "user_name" not in st.session_state:
     st.session_state["user_name"] = "Guest"
 if "org_name" not in st.session_state:
     st.session_state["org_name"] = "Individual"
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
 # ----------------------------
-# Helpers & Forensic Logic
+# 3) UPDATED: Multi-Sheet Load Function
+# ----------------------------
+def load_uploaded(uploaded_file):
+    name = uploaded_file.name.lower()
+    try:
+        if name.endswith(".csv"):
+            return pd.read_csv(uploaded_file, encoding='utf-8', on_bad_lines='skip')
+        else:
+            # First, just load the Excel file to see the sheet names
+            xl = pd.ExcelFile(uploaded_file)
+            sheet_names = xl.sheet_names
+            
+            # If there's more than one sheet, let the user pick in the UI
+            if len(sheet_names) > 1:
+                selected_sheet = st.selectbox("This file has multiple sheets. Which one should I audit?", sheet_names)
+                return pd.read_excel(uploaded_file, sheet_name=selected_sheet, engine="openpyxl")
+            else:
+                return pd.read_excel(uploaded_file, sheet_name=0, engine="openpyxl")
+    except Exception as e:
+        st.error(f"Error reading file: {e}")
+        return pd.DataFrame()
+
+# ----------------------------
+# 4) Helpers & Forensic Engine
 # ----------------------------
 def _norm(s: str) -> str:
     return "".join(ch.lower() for ch in str(s).strip() if ch.isalnum())
@@ -61,24 +79,20 @@ def find_col(df: pd.DataFrame, candidates: list[str]):
         if key in norm_map: return norm_map[key]
     return None
 
-def load_uploaded(uploaded_file) -> pd.DataFrame:
-    name = uploaded_file.name.lower()
-    try:
-        if name.endswith(".csv"):
-            return pd.read_csv(uploaded_file, encoding='utf-8', on_bad_lines='skip')
-        else:
-            return pd.read_excel(uploaded_file, engine="openpyxl")
-    except:
-        return pd.DataFrame()
-
 def build_audit(df_raw: pd.DataFrame):
+    if df_raw.empty: return pd.DataFrame()
     df = df_raw.copy()
-    col_invoice = find_col(df, ["Invoice_ID", "InvoiceID"])
-    col_vendor  = find_col(df, ["Vendor_Name", "VendorName", "Vendor"])
-    col_invdate = find_col(df, ["Invoice_Date", "Date"])
-    col_unit    = find_col(df, ["Unit_Price", "Price"])
-    col_lineamt = find_col(df, ["Line_Amount", "Amount"])
-    col_total   = find_col(df, ["Invoice_Total", "Total"])
+    
+    col_invoice = find_col(df, ["Invoice_ID", "InvoiceID", "Invoice Number"])
+    col_vendor  = find_col(df, ["Vendor_Name", "VendorName", "Vendor", "Supplier"])
+    col_invdate = find_col(df, ["Invoice_Date", "Date", "Billing Date"])
+    col_unit    = find_col(df, ["Unit_Price", "Price", "Rate"])
+    col_lineamt = find_col(df, ["Line_Amount", "Amount", "Total Cost"])
+    col_total   = find_col(df, ["Invoice_Total", "Total", "Grand Total"])
+
+    if not col_lineamt:
+        st.warning("⚠️ **Schema Mismatch:** I couldn't find a financial 'Amount' column on this sheet.")
+        return pd.DataFrame()
 
     df["__Invoice_ID"] = df[col_invoice].astype(str) if col_invoice else "N/A"
     df["__Vendor"] = df[col_vendor].astype(str) if col_vendor else "N/A"
@@ -88,54 +102,56 @@ def build_audit(df_raw: pd.DataFrame):
     df["__Invoice_Date"] = pd.to_datetime(df[col_invdate], errors='coerce')
 
     issues = []
-    # 1. Duplicates
+    # Duplicate Check
     dup_ids = df["__Invoice_ID"][df["__Invoice_ID"].duplicated(keep=False)]
-    if not dup_ids.empty:
+    if not dup_ids.empty and (df["__Invoice_ID"] != "N/A").any():
         amt = df[df["__Invoice_ID"].isin(dup_ids.unique())]["__Invoice_Total"].sum()
-        issues.append({"Category": "Duplicate Invoice", "Amount ($)": float(amt), "Priority": "🔴 Critical"})
+        issues.append({"Category": "Duplicate Invoice", "Amount ($)": float(amt), "Count": int(len(dup_ids)), "Priority": "🔴 Critical"})
     
-    # 2. Price Creep
+    # Price Creep
     creep_amt = 0
+    creep_count = 0
     for v, group in df.sort_values("__Invoice_Date").groupby("__Vendor"):
         if len(group) > 1:
             diff = group["__Unit_Price"].iloc[-1] - group["__Unit_Price"].iloc[0]
-            if diff > 0: creep_amt += diff * group["__Line_Amount"].count()
-    if creep_amt > 0:
-        issues.append({"Category": "Price Creep", "Amount ($)": float(creep_amt), "Priority": "🟠 High"})
-
-    # 3. Negatives
-    negs = df[df["__Line_Amount"] < 0]
-    if not negs.empty:
-        issues.append({"Category": "Negative Leak", "Amount ($)": float(negs["__Line_Amount"].abs().sum()), "Priority": "🟣 High"})
+            if diff > 0: 
+                creep_amt += diff * group["__Line_Amount"].count()
+                creep_count += 1
+    if creep_count > 0:
+        issues.append({"Category": "Price Creep", "Amount ($)": float(creep_amt), "Count": creep_count, "Priority": "🟠 High"})
 
     return pd.DataFrame(issues)
 
 # ----------------------------
-# 3) UI Logic (Login/Signup)
+# 5) AI Assistant Logic
+# ----------------------------
+def forensic_bot(query, audit_df):
+    query = query.lower()
+    total = audit_df["Amount ($)"].sum() if not audit_df.empty else 0
+    if "total" in query or "much" in query:
+        return f"I have found ${total:,.2f} in recoverable leaks."
+    elif "hello" in query or "hi" in query:
+        return f"Hello {st.session_state['user_name']}! Ready to audit {st.session_state['org_name']}?"
+    return "Ask me about 'total leaks' or 'duplicates'."
+
+# ----------------------------
+# 6) UI Logic (Login / Signup)
 # ----------------------------
 if not st.session_state["logged_in"]:
     st.title("🛡️ ClearSpend Security Portal")
     tab1, tab2 = st.tabs(["Login", "Create Account"])
-    
     with tab1:
-        u_input = st.text_input("Username")
-        p_input = st.text_input("Password", type="password")
+        u_in = st.text_input("Username")
+        p_in = st.text_input("Password", type="password")
         if st.button("Log In"):
-            if u_input in st.session_state["accounts"]:
-                account_data = st.session_state["accounts"][u_input]
-                # Check if the stored data is a dict (new format)
-                if isinstance(account_data, dict) and account_data.get("pw") == p_input:
-                    st.session_state["logged_in"] = True
-                    st.session_state["user_name"] = account_data.get("name", "User")
-                    st.session_state["org_name"] = account_data.get("org", "Organization")
-                    st.rerun()
-                else:
-                    st.error("Invalid password.")
+            if u_in in st.session_state["accounts"] and st.session_state["accounts"][u_in]["pw"] == p_in:
+                st.session_state["logged_in"] = True
+                st.session_state["user_name"] = st.session_state["accounts"][u_in]["name"]
+                st.session_state["org_name"] = st.session_state["accounts"][u_in]["org"]
+                st.rerun()
             else:
-                st.error("Username not found.")
-                
+                st.error("Invalid credentials.")
     with tab2:
-        st.subheader("Join the ClearSpend Family! 🎈")
         new_u = st.text_input("New Username")
         new_p = st.text_input("New Password", type="password")
         new_n = st.text_input("Full Name")
@@ -144,12 +160,10 @@ if not st.session_state["logged_in"]:
             if new_u and new_p and new_n and new_o:
                 st.session_state["accounts"][new_u] = {"pw": new_p, "name": new_n, "org": new_o}
                 st.balloons()
-                st.success(f"Account for {new_n} at {new_o} created! Log in above.")
-            else:
-                st.warning("Please fill out all fields.")
+                st.success("Account created! You can now log in.")
 
 # ----------------------------
-# 4) Main Dashboard
+# 7) Main Dashboard
 # ----------------------------
 else:
     with st.sidebar:
@@ -158,42 +172,56 @@ else:
         st.info(f"👤 **User:** {st.session_state['user_name']}")
         st.warning(f"🏢 **Company:** {st.session_state['org_name']}")
         st.write("---")
+        
+        # Chatbot
+        st.subheader("🤖 AI Assistant")
+        with st.expander("Chat with Audit Bot"):
+            for m in st.session_state.messages:
+                with st.chat_message(m["role"]): st.markdown(m["content"])
+            if pr := st.chat_input("Ask something..."):
+                st.session_state.messages.append({"role": "user", "content": pr})
+                with st.chat_message("user"): st.markdown(pr)
+                res = forensic_bot(pr, st.session_state.get('last_audit', pd.DataFrame()))
+                with st.chat_message("assistant"): st.markdown(res)
+                st.session_state.messages.append({"role": "assistant", "content": res})
+
+        st.write("---")
         if st.button("Log Out"):
             st.session_state["logged_in"] = False
+            st.session_state.messages = []
             st.rerun()
 
     st.title(f"📊 {st.session_state['org_name']} Recovery Dashboard")
     f = st.file_uploader("Upload AP Ledger", type=["csv", "xlsx"])
 
     if f:
+        # The update allows the user to select sheets if there are multiple
+        df_raw = load_uploaded(f)
+        
         with st.status("🚀 AI Engine Scanning..."):
-            raw = load_uploaded(f)
-            audit_df = build_audit(raw)
+            audit_df = build_audit(df_raw)
+            st.session_state['last_audit'] = audit_df
         
-        m1, m2, m3 = st.columns(3)
-        total = audit_df["Amount ($)"].sum() if not audit_df.empty else 0
-        m1.metric("Recoverable Cash", f"${total:,.2f}")
-        m2.metric("Leaks Found", len(audit_df))
-        m3.metric("ROI", f"{(total/15000):.1f}x")
+        if not audit_df.empty:
+            m1, m2, m3 = st.columns(3)
+            val = audit_df["Amount ($)"].sum()
+            m1.metric("Recoverable Cash", f"${val:,.2f}")
+            m2.metric("Leaks Found", len(audit_df))
+            m3.metric("ROI", f"{(val/15000):.1f}x")
 
-        st.divider()
-        col_f, col_c = st.columns([1, 1.5])
-        
-        with col_f:
-            st.write("### 🔍 Filters")
-            if not audit_df.empty:
-                cats = st.multiselect("Select Categories", options=audit_df["Category"].unique(), default=audit_df["Category"].unique())
+            st.divider()
+            col_f, col_c = st.columns([1, 1.5])
+            with col_f:
+                st.write("### 🔍 Filters")
+                cats = st.multiselect("Categories", options=audit_df["Category"].unique(), default=audit_df["Category"].unique())
                 filtered = audit_df[audit_df["Category"].isin(cats)]
                 st.dataframe(filtered, use_container_width=True, hide_index=True)
-            else:
-                st.info("No leaks detected.")
-
-        with col_c:
-            st.write("### 📈 Leak Distribution")
-            if not audit_df.empty and not filtered.empty:
+            with col_c:
+                st.write("### 📈 Distribution")
                 st.bar_chart(data=filtered, x="Category", y="Amount ($)")
             
-        if not audit_df.empty:
             st.divider()
             csv = filtered.to_csv(index=False).encode('utf-8')
-            st.download_button(label="Download Recovery Report (CSV)", data=csv, file_name='ClearSpend_Report.csv', mime='text/csv')
+            st.download_button("Download Recovery Report (CSV)", data=csv, file_name='ClearSpend_Report.csv', mime='text/csv')
+        else:
+            st.info("💡 Please upload a ledger or select a sheet with financial columns (Amount, Price, etc.).")
