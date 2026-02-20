@@ -245,5 +245,3 @@ else:
             st.download_button(label="Download Recovery Report (CSV)", data=csv, file_name=f"ClearSpend_Audit.csv", mime='text/csv')
         else:
             st.info("💡 Please upload a financial ledger to begin.")
-
-```
