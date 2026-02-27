@@ -40,20 +40,7 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 
 # ----------------------------
-# 3) Data Loading
-# ----------------------------
-def load_uploaded(uploaded_file):
-    try:
-        if uploaded_file.name.lower().endswith(".csv"):
-            return pd.read_csv(uploaded_file, encoding='utf-8', on_bad_lines='skip')
-        else:
-            return pd.read_excel(uploaded_file, engine="openpyxl")
-    except Exception as e:
-        st.error(f"Error reading file: {e}")
-        return pd.DataFrame()
-
-# ----------------------------
-# 4) Forensic Engine
+# 3) Forensic Engine
 # ----------------------------
 def _norm(s: str) -> str:
     return "".join(ch.lower() for ch in str(s).strip() if ch.isalnum())
@@ -73,71 +60,77 @@ def build_audit(df_raw: pd.DataFrame):
     col_invoice = find_col(df, ["Invoice_ID", "InvoiceID"])
 
     if not col_lineamt or not col_total:
-        st.warning("⚠️ Mapping Error: Ensure 'Line_Amount' and 'Invoice_Total' columns exist.")
+        st.warning("⚠️ Column Mapping Error: Could not find Amount or Total columns.")
         return pd.DataFrame()
 
-    df["__Line"] = pd.to_numeric(df[col_lineamt], errors='coerce').fillna(0)
-    df["__Total"] = pd.to_numeric(df[col_total], errors='coerce').fillna(0)
+    df["__L"] = pd.to_numeric(df[col_lineamt], errors='coerce').fillna(0)
+    df["__T"] = pd.to_numeric(df[col_total], errors='coerce').fillna(0)
+    df["__ID"] = df[col_invoice].astype(str) if col_invoice else "N/A"
 
     issues = []
 
-    # --- UPDATED MATH INTEGRITY LOGIC ---
-    # Check for the specific $25 hidden fee discrepancy
-    diffs = df["__Total"] - df["__Line"]
-    hidden_fee_rows = df[diffs == 25.0]
-    other_mismatch = df[(diffs != 0) & (diffs != 25.0)]
-
-    if not hidden_fee_rows.empty:
-        total_leak = 25.0 * len(hidden_fee_rows)
+    # 1. Math Integrity Check (General Definition Logic)
+    mismatch = df[df["__L"] != df["__T"]]
+    if not mismatch.empty:
+        amt = (mismatch["__T"] - mismatch["__L"]).abs().sum()
         issues.append({
-            "Category": "Hidden $25 Service Fee", 
-            "Amount ($)": float(total_leak), 
-            "Count": len(hidden_fee_rows), 
+            "Category": "Math Integrity Check", 
+            "Amount ($)": float(amt), 
             "Priority": "🔴 Critical"
         })
-
-    if not other_mismatch.empty:
-        amt = (other_mismatch["__Total"] - other_mismatch["__Line"]).abs().sum()
+    
+    # 2. Duplicate Detection
+    dup_ids = df["__ID"][df["__ID"].duplicated(keep=False)]
+    if not dup_ids.empty and (df["__ID"] != "N/A").any():
+        amt = df[df["__ID"].isin(dup_ids.unique())]["__T"].sum()
         issues.append({
-            "Category": "General Math Mismatch", 
+            "Category": "Duplicate Invoice", 
             "Amount ($)": float(amt), 
-            "Count": len(other_mismatch), 
-            "Priority": "🟡 Medium"
+            "Priority": "🔴 Critical"
         })
 
     return pd.DataFrame(issues)
 
 # ----------------------------
-# 5) Chatbot Logic
+# 4) Chatbot Logic
 # ----------------------------
-def forensic_bot(query, audit_df):
+def forensic_bot(query):
     query = query.lower()
-    if "math" in query or "fee" in query or "25" in query:
-        return "**Math Integrity Check:** My engine detected multiple instances where the vendor added exactly **$25.00** to the total without listing it as a line item. These are flagged as 'Hidden Service Fees'."
-    return f"Hi {st.session_state.get('user_name', 'User')}! Ask me about the hidden fees found in the audit."
+    if "math" in query or "integrity" in query:
+        return (
+            "**Math Integrity Check:** A forensic validation process that ensures a financial document is "
+            "internally consistent. It independently recalculates the sum of all itemized charges (Line Amounts) "
+            "and compares them against the final billed amount (Invoice Total) to uncover discrepancies."
+        )
+    return "I am the ClearSpend AI. Ask me about Math Integrity or duplicates!"
 
 # ----------------------------
-# 6) UI Logic (Dashboard)
+# 5) UI Logic (Login)
 # ----------------------------
 if not st.session_state["logged_in"]:
     st.title("🛡️ ClearSpend Security Portal")
     t1, t2 = st.tabs(["Login", "Create Account"])
     with t1:
-        u = st.text_input("Username")
-        p = st.text_input("Password", type="password")
-        if st.button("Log In"):
+        u = st.text_input("Username", key="login_u")
+        p = st.text_input("Password", type="password", key="login_p")
+        if st.button("Log In", use_container_width=True):
             if u in st.session_state["accounts"] and st.session_state["accounts"][u]["pw"] == p:
                 st.session_state["logged_in"] = True
                 st.session_state["user_name"] = st.session_state["accounts"][u]["name"]
                 st.session_state["org_name"] = st.session_state["accounts"][u]["org"]
                 st.rerun()
+            else:
+                st.error("❌ Invalid Username or Password. Please try again.")
     with t2:
-        st.text_input("Username", key="r_u")
-        st.text_input("Password", type="password", key="r_p")
+        st.text_input("Username", key="s_u")
+        st.text_input("Password", type="password", key="s_p")
         if st.button("Sign Up"):
             st.balloons()
-            st.success("Account created!")
+            st.success("✅ Account created!")
 
+# ----------------------------
+# 6) Main Dashboard
+# ----------------------------
 else:
     with st.sidebar:
         st.markdown('<p class="brand-text">💎 ClearSpend</p>', unsafe_allow_html=True)
@@ -147,35 +140,43 @@ else:
         with st.expander("Chat with Bot", expanded=True):
             for m in st.session_state.messages:
                 with st.chat_message(m["role"]): st.markdown(m["content"])
-            if pr := st.chat_input("Ask about the fees..."):
+            if pr := st.chat_input("Ask a question..."):
                 st.session_state.messages.append({"role": "user", "content": pr})
-                res = forensic_bot(pr, st.session_state.get('last_audit', pd.DataFrame()))
+                res = forensic_bot(pr)
                 st.session_state.messages.append({"role": "assistant", "content": res})
                 st.rerun()
+
+        if st.button("Log Out"):
+            st.session_state["logged_in"] = False
+            st.rerun()
 
     st.title(f"📊 {st.session_state['org_name']} Recovery Dashboard")
     f = st.file_uploader("Upload Ledger", type=["csv", "xlsx"])
 
     if f:
-        df_raw = load_uploaded(f)
+        df_raw = pd.read_csv(f) if f.name.endswith('.csv') else pd.read_excel(f)
         audit_df = build_audit(df_raw)
-        st.session_state['last_audit'] = audit_df
         
         if not audit_df.empty:
-            m1, m2, m3 = st.columns(3)
-            val = audit_df["Amount ($)"].sum()
-            m1.metric("Recoverable Cash", f"${val:,.2f}")
-            m2.metric("Audits Passed", "5/5")
-            m3.metric("ROI", f"{(val/15000):.1f}x")
-
+            st.metric("Recoverable Cash", f"${audit_df['Amount ($)'].sum():,.2f}")
+            
             st.divider()
             col_f, col_c = st.columns([1, 1.5])
+            
             with col_f:
                 st.write("### 🔍 Findings")
-                st.dataframe(audit_df, use_container_width=True, hide_index=True)
+                # FIXED: This adds the filter back properly
+                options = audit_df["Category"].unique().tolist()
+                selected_cats = st.multiselect("Filter by Category", options, default=options)
+                filtered_df = audit_df[audit_df["Category"].isin(selected_cats)]
+                st.dataframe(filtered_df, use_container_width=True, hide_index=True)
+            
             with col_c:
                 st.write("### 📈 Risk Distribution")
-                st.bar_chart(data=audit_df, x="Category", y="Amount ($)")
+                # FIXED: The chart now reacts to the filter above
+                st.bar_chart(data=filtered_df, x="Category", y="Amount ($)")
             
-            csv = audit_df.to_csv(index=False).encode('utf-8')
-            st.download_button(label="Download Report", data=csv, file_name="Audit_Report.csv")
+            st.divider()
+            # FIXED: Encoding and index removal to stop weird symbols in CSV
+            csv_data = filtered_df.to_csv(index=False).encode('utf-8')
+            st.download_button("Download Recovery Report (CSV)", data=csv_data, file_name="ClearSpend_Audit.csv")
