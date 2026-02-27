@@ -77,6 +77,7 @@ def build_audit(df_raw: pd.DataFrame):
     if df_raw.empty: return pd.DataFrame()
     df = df_raw.copy()
     
+    # Mapping
     col_invoice = find_col(df, ["Invoice_ID", "InvoiceID", "Invoice Number"])
     col_vendor  = find_col(df, ["Vendor_Name", "VendorName", "Vendor", "Supplier"])
     col_unit    = find_col(df, ["Unit_Price", "Price"])
@@ -97,19 +98,19 @@ def build_audit(df_raw: pd.DataFrame):
 
     issues = []
 
-    # 1. Duplicates
+    # Duplicates
     dup_ids = df["__Invoice_ID"][df["__Invoice_ID"].duplicated(keep=False)]
     if not dup_ids.empty and (df["__Invoice_ID"] != "N/A").any():
         amt = df[df["__Invoice_ID"].isin(dup_ids.unique())]["__Invoice_Total"].sum()
         issues.append({"Category": "Duplicate Invoice", "Amount ($)": float(amt), "Priority": "🔴 Critical"})
     
-    # 2. Math Integrity
+    # Math Integrity
     if col_total:
         mismatch = df[df["__Line_Amount"] != df["__Invoice_Total"]]
         if not mismatch.empty:
             issues.append({"Category": "Math Integrity Check", "Amount ($)": float(mismatch["__Line_Amount"].sum() * 0.1), "Priority": "🔴 Critical"})
 
-    # 3. Price Creep
+    # Price Creep
     creep_amt = 0
     for v, group in df.sort_values("__Date").groupby("__Vendor"):
         if len(group) > 1:
@@ -118,13 +119,13 @@ def build_audit(df_raw: pd.DataFrame):
     if creep_amt > 0:
         issues.append({"Category": "Price Creep", "Amount ($)": float(creep_amt), "Priority": "🟠 High"})
 
-    # 4. Inconsistency
+    # Inconsistency
     variance = df.groupby("__Vendor")["__Unit_Price"].nunique()
     if (variance > 1).any():
         count = (variance > 1).sum()
         issues.append({"Category": "Pricing Inconsistency", "Amount ($)": 750.0 * count, "Priority": "🟡 Medium"})
 
-    # 5. Negative Leak
+    # Negative Leak
     negs = df[df["__Line_Amount"] < 0]
     if not negs.empty:
         issues.append({"Category": "Negative Leak", "Amount ($)": float(negs["__Line_Amount"].abs().sum()), "Priority": "🟣 High"})
@@ -151,18 +152,16 @@ if not st.session_state["logged_in"]:
                 st.error("Invalid credentials.")
                 
     with t2:
-        nu = st.text_input("Username", key="sig_u") # Fixed label from "New User" to "Username"
-        np = st.text_input("Password", type="password", key="sig_p") # Fixed label from "New Pass" to "Password"
+        nu = st.text_input("New Username", key="sig_u")
+        np = st.text_input("New Password", type="password", key="sig_p")
         nn = st.text_input("Full Name", key="sig_n")
         no = st.text_input("Company", key="sig_o")
         
         if st.button("Sign Up"):
             if nu and np and nn and no:
                 st.session_state["accounts"][nu] = {"pw": np, "name": nn, "org": no}
-                # Success visual sequence
-                st.balloons() 
-                st.success(f"Welcome {nn}! Account created. Please switch to the Login tab.")
-                time.sleep(1) # Small pause to ensure balloons render before state changes
+                st.balloons() # BALLOONS TRIGGERED HERE
+                st.success(f"Welcome {nn}! Account created. Now go to the Login tab.")
             else:
                 st.warning("Please fill in all fields.")
 
@@ -184,6 +183,7 @@ else:
     f = st.file_uploader("Upload Ledger", type=["csv", "xlsx"])
 
     if f:
+        # Simplified loader
         if f.name.endswith('.csv'): df_raw = pd.read_csv(f)
         else: df_raw = pd.read_excel(f)
         
