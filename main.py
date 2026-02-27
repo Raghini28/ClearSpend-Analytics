@@ -50,7 +50,7 @@ def build_audit(df_raw: pd.DataFrame):
     if df_raw.empty: return pd.DataFrame()
     df = df_raw.copy()
     
-    # Cleaning currency
+    # Cleaning currency formatting
     for col in df.columns:
         if df[col].dtype == 'object':
             df[col] = df[col].astype(str).str.replace(r'[$,]', '', regex=True)
@@ -113,43 +113,79 @@ def build_audit(df_raw: pd.DataFrame):
 def forensic_bot(query):
     query = query.lower()
     if "math" in query or "integrity" in query:
-        return "**Math Integrity Check:** Acts as a 'Digital Receipt Validator' ensuring items match the total billed."
-    return "Ask me about the 5 forensic validations!"
+        return "**Math Integrity Check:** Recalculates sum of line items vs the grand total to find hidden fees."
+    return "Ask me about Duplicates, Price Creep, or Math Integrity!"
 
 # ----------------------------
-# 5) UI: Login & Dashboard
+# 5) UI FLOW: Login SCREEN
 # ----------------------------
 if not st.session_state["logged_in"]:
     st.title("🛡️ ClearSpend Security Portal")
-    u = st.text_input("Username")
-    p = st.text_input("Password", type="password")
-    if st.button("Log In"):
-        if u in st.session_state["accounts"] and st.session_state["accounts"][u]["pw"] == p:
-            st.session_state["logged_in"] = True
-            st.rerun()
-        else: st.error("❌ Invalid credentials.")
+    tab_l, tab_s = st.tabs(["Login", "Create Account"])
+    with tab_l:
+        u = st.text_input("Username", key="l_u")
+        p = st.text_input("Password", type="password", key="l_p")
+        if st.button("Log In", use_container_width=True):
+            if u in st.session_state["accounts"] and st.session_state["accounts"][u]["pw"] == p:
+                st.session_state["logged_in"] = True
+                st.session_state["user_name"] = st.session_state["accounts"][u]["name"]
+                st.session_state["org_name"] = st.session_state["accounts"][u]["org"]
+                st.rerun()
+            else:
+                st.error("❌ Invalid Username or Password")
+    with tab_s:
+        st.text_input("Full Name", key="s_n")
+        st.button("Sign Up")
 
+# ----------------------------
+# 6) UI FLOW: DASHBOARD SCREEN
+# ----------------------------
 else:
+    # Sidebar
     with st.sidebar:
         st.markdown('<p class="brand-text">💎 ClearSpend</p>', unsafe_allow_html=True)
-        if st.chat_input("Ask AI..."): pass # Chat interface logic here
+        st.info(f"👤 {st.session_state['user_name']} | 🏢 {st.session_state['org_name']}")
+        
+        st.subheader("🤖 AI Assistant")
+        with st.expander("Chat with Bot", expanded=True):
+            for m in st.session_state.messages:
+                with st.chat_message(m["role"]): st.markdown(m["content"])
+            if pr := st.chat_input("Ask about the 5 checks..."):
+                st.session_state.messages.append({"role": "user", "content": pr})
+                res = forensic_bot(pr)
+                st.session_state.messages.append({"role": "assistant", "content": res})
+                st.rerun()
 
-    st.title("📊 Recovery Dashboard")
-    f = st.file_uploader("Upload Full Forensic Dataset", type=["csv", "xlsx"])
+        if st.button("Log Out", use_container_width=True):
+            st.session_state["logged_in"] = False
+            st.rerun()
+
+    # Main Content
+    st.title(f"📊 {st.session_state['org_name']} Recovery Dashboard")
+    f = st.file_uploader("Upload Forensic Dataset", type=["csv", "xlsx"])
 
     if f:
         df_raw = pd.read_csv(f) if f.name.endswith('.csv') else pd.read_excel(f)
         audit_df = build_audit(df_raw)
         
         if not audit_df.empty:
-            st.metric("Total Recoverable Cash", f"${audit_df['Amount ($)'].sum():,.2f}")
+            st.metric("Total Recoverable Cash Found", f"${audit_df['Amount ($)'].sum():,.2f}")
+            
+            st.divider()
             col1, col2 = st.columns([1, 1.5])
+            
             with col1:
+                st.write("### 🔍 Findings")
                 opts = audit_df["Category"].unique().tolist()
                 sel = st.multiselect("Filter Issues", opts, default=opts)
                 filt = audit_df[audit_df["Category"].isin(sel)]
-                st.dataframe(filt, hide_index=True)
+                st.dataframe(filt, use_container_width=True, hide_index=True)
+            
             with col2:
+                st.write("### 📈 Risk Distribution")
                 st.bar_chart(data=filt, x="Category", y="Amount ($)")
             
-            st.download_button("Download Clean Report", filt.to_csv(index=False).encode('utf-8-sig'), "Audit.csv")
+            st.divider()
+            # CSV Download (Clean)
+            csv_data = filt.to_csv(index=False).encode('utf-8-sig')
+            st.download_button("Download Recovery Report", csv_data, "ClearSpend_Audit.csv")
