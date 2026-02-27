@@ -6,6 +6,7 @@ import pandas as pd
 # ----------------------------
 st.set_page_config(page_title="ClearSpend Analytics", layout="wide", initial_sidebar_state="expanded")
 
+# Premium Pink/Navy Corporate Styling
 st.markdown("""
 <style>
 .stApp { background-color: #FFF0F5; }
@@ -19,12 +20,17 @@ div[data-testid="stMetric"] {
     box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
 }
 h1, h2, h3 { color: #0f172a !important; }
-[data-testid="stChatMessage"] p { color: #000000 !important; }
+/* This makes all chatbot answers appear bolder and clearer */
+[data-testid="stChatMessage"] p { 
+    color: #000000 !important; 
+    font-weight: 700 !important; 
+    font-size: 1.05rem;
+}
 </style>
 """, unsafe_allow_html=True)
 
 # ----------------------------
-# 2) State Management
+# 2) State Management (Persistence Fix)
 # ----------------------------
 if "logged_in" not in st.session_state:
     st.session_state["logged_in"] = False
@@ -32,12 +38,12 @@ if "accounts" not in st.session_state:
     st.session_state["accounts"] = {"admin": {"pw": "uic2026", "name": "Raghini Kumar", "org": "UIC"}}
 if "messages" not in st.session_state:
     st.session_state.messages = []
-# Added memory for the audit data so it stays visible
+# This ensures data stays on screen during chat
 if "audit_data" not in st.session_state:
     st.session_state.audit_data = None
 
 # ----------------------------
-# 3) Forensic Engine
+# 3) Forensic Engine (All 5 Validations)
 # ----------------------------
 def _norm(s: str) -> str:
     return "".join(ch.lower() for ch in str(s).strip() if ch.isalnum())
@@ -51,6 +57,8 @@ def find_col(df: pd.DataFrame, candidates: list[str]):
 def build_audit(df_raw: pd.DataFrame):
     if df_raw.empty: return pd.DataFrame()
     df = df_raw.copy()
+    
+    # Clean currency formatting
     for col in df.columns:
         if df[col].dtype == 'object':
             df[col] = df[col].astype(str).str.replace(r'[$,]', '', regex=True)
@@ -74,17 +82,17 @@ def build_audit(df_raw: pd.DataFrame):
 
     issues = []
 
-    # Math Integrity
+    # 1. Math Integrity
     mismatch = df[df["__L"] != df["__T"]]
     if not mismatch.empty:
         issues.append({"Category": "Math Integrity Check", "Amount ($)": float((mismatch["__T"] - mismatch["__L"]).abs().sum()), "Priority": "🔴 Critical"})
     
-    # Duplicate Invoice
+    # 2. Duplicate Invoice
     dup_ids = df["__ID"][df["__ID"].duplicated(keep=False)]
     if not dup_ids.empty and (df["__ID"] != "N/A").any():
         issues.append({"Category": "Duplicate Invoice", "Amount ($)": float(df[df["__ID"].isin(dup_ids.unique())]["__T"].sum()), "Priority": "🔴 Critical"})
 
-    # Price Creep
+    # 3. Price Creep
     creep_amt = 0
     for v, group in df.sort_values("__D").groupby("__V"):
         if len(group) > 1:
@@ -93,12 +101,12 @@ def build_audit(df_raw: pd.DataFrame):
     if creep_amt > 0:
         issues.append({"Category": "Price Creep", "Amount ($)": float(creep_amt), "Priority": "🟠 High"})
 
-    # Negative Leak
+    # 4. Negative Leak
     negs = df[df["__L"] < 0]
     if not negs.empty:
         issues.append({"Category": "Negative Leak", "Amount ($)": float(negs["__L"].abs().sum()), "Priority": "🟣 High"})
 
-    # Pricing Inconsistency
+    # 5. Pricing Inconsistency
     if col_unit:
         variance = df.groupby("__V")["__U"].nunique()
         inc_count = (variance > 1).sum()
@@ -108,23 +116,30 @@ def build_audit(df_raw: pd.DataFrame):
     return pd.DataFrame(issues)
 
 # ----------------------------
-# 4) Chatbot Logic (Bullet points, no numbers)
+# 4) Chatbot Logic (Bolder Definitions)
 # ----------------------------
 def forensic_bot(query):
     query = query.lower()
+    
     if "site" in query or "do" in query or "clearspend" in query:
-        return "**ClearSpend Analytics** is a forensic audit platform that identifies financial leaks in Accounts Payable data to recover lost capital."
+        return "**ClearSpend Analytics is a high-level forensic audit platform designed to identify hidden financial leaks, recover lost capital, and ensure 100% vendor compliance through AI-driven data validation.**"
+    
     elif "math" in query or "integrity" in query:
-        return "* **Math Integrity Check:** A Digital Receipt Validator that ensures Line Amounts match the Invoice Total."
+        return "**Math Integrity Check: This functions as a Digital Receipt Validator. It cross-references itemized Line Amounts with the final Invoice Total to catch shadow fees, hidden surcharges, and data entry errors.**"
+    
     elif "duplicate" in query:
-        return "* **Duplicate Invoice:** Scans for identical Invoice IDs to prevent paying the same bill twice."
-    elif "creep" in query:
-        return "* **Price Creep:** Monitors unit price increases over time for the same vendor items."
+        return "**Duplicate Invoice: This validation scans for identical Invoice IDs across the entire dataset to prevent the company from paying the same obligation twice due to clerical oversight.**"
+    
+    elif "creep" in query or "price" in query:
+        return "**Price Creep: This monitors unit pricing trends over time. It flags vendors who incrementally raise costs for identical items, allowing management to halt unauthorized price inflation.**"
+    
     elif "negative" in query or "leak" in query:
-        return "* **Negative Leak:** Identifies negative values/credits that haven't been successfully recovered."
+        return "**Negative Leak: This identifies negative entries and credits that have been logged but never actually recovered or applied, ensuring that no money is left sitting with the vendor.**"
+    
     elif "inconsistency" in query:
-        return "* **Pricing Inconsistency:** Checks if a vendor charges different prices for the same service across different locations."
-    return "I am the ClearSpend AI. Ask me about our forensic checks!"
+        return "**Pricing Inconsistency: This detects when a single vendor charges varying rates for the same SKU across different departments or locations, exposing gaps in negotiated contracts.**"
+    
+    return "**I am the ClearSpend AI Assistant. I can explain our core forensic checks: Math Integrity, Duplicates, Price Creep, Negative Leaks, or Pricing Inconsistency.**"
 
 # ----------------------------
 # 5) UI Flow: Login & Dashboard
@@ -140,17 +155,19 @@ if not st.session_state["logged_in"]:
             st.session_state["org_name"] = st.session_state["accounts"][u]["org"]
             st.rerun()
         else:
-            st.error("❌ Invalid Username or Password")
+            st.error("❌ **Invalid Username or Password. Please check your credentials.**")
+
 else:
+    # Sidebar with Bot
     with st.sidebar:
         st.markdown('<p class="brand-text">💎 ClearSpend</p>', unsafe_allow_html=True)
-        st.info(f"👤 {st.session_state['user_name']} | 🏢 {st.session_state['org_name']}")
+        st.info(f"👤 **{st.session_state['user_name']}** | 🏢 **{st.session_state['org_name']}**")
         
         st.subheader("🤖 AI Assistant")
-        with st.expander("Chat with Bot", expanded=True):
+        with st.expander("Chat with Forensic AI", expanded=True):
             for m in st.session_state.messages:
                 with st.chat_message(m["role"]): st.markdown(m["content"])
-            if pr := st.chat_input("Ask about the leaks..."):
+            if pr := st.chat_input("Ask a forensic question..."):
                 st.session_state.messages.append({"role": "user", "content": pr})
                 res = forensic_bot(pr)
                 st.session_state.messages.append({"role": "assistant", "content": res})
@@ -161,30 +178,36 @@ else:
             st.session_state.audit_data = None
             st.rerun()
 
+    # Main Dashboard UI
     st.title(f"📊 {st.session_state['org_name']} Recovery Dashboard")
-    f = st.file_uploader("Upload Financial Ledger", type=["csv", "xlsx"])
+    f = st.file_uploader("Upload AP Ledger for Forensic Scan", type=["csv", "xlsx"])
 
-    # If new file is uploaded, run audit and save to state
+    # File processing saves to state so it stays visible during chat
     if f:
         df_raw = pd.read_csv(f) if f.name.endswith('.csv') else pd.read_excel(f)
         st.session_state.audit_data = build_audit(df_raw)
 
-    # Display audit if it exists in memory
     if st.session_state.audit_data is not None:
         audit_df = st.session_state.audit_data
         if not audit_df.empty:
             st.metric("Total Recoverable Cash Found", f"${audit_df['Amount ($)'].sum():,.2f}")
+            
+            st.divider()
             col1, col2 = st.columns([1, 1.5])
+            
             with col1:
-                st.write("### 🔍 Findings")
+                st.write("### 🔍 Risk Findings")
                 opts = audit_df["Category"].unique().tolist()
-                sel = st.multiselect("Filter Issues", opts, default=opts)
+                sel = st.multiselect("Filter Security Categories", opts, default=opts)
                 filt = audit_df[audit_df["Category"].isin(sel)]
                 st.dataframe(filt, use_container_width=True, hide_index=True)
+            
             with col2:
-                st.write("### 📈 Risk Distribution")
+                st.write("### 📈 Exposure Distribution")
                 st.bar_chart(data=filt, x="Category", y="Amount ($)")
             
             st.divider()
             csv_data = filt.to_csv(index=False).encode('utf-8-sig')
-            st.download_button("Download Recovery Report", csv_data, "ClearSpend_Audit.csv")
+            st.download_button("Download Secure Audit Report", csv_data, "ClearSpend_Forensic_Report.csv")
+        else:
+            st.success("**Audit Complete: Zero mathematical discrepancies or financial leaks detected.**")
