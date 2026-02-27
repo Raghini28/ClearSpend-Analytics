@@ -55,6 +55,11 @@ def build_audit(df_raw: pd.DataFrame):
     if df_raw.empty: return pd.DataFrame()
     df = df_raw.copy()
     
+    # Pre-processing: Strip currency symbols and commas to prevent math errors and weird symbols
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            df[col] = df[col].astype(str).str.replace(r'[$,]', '', regex=True)
+
     col_lineamt = find_col(df, ["Line_Amount", "Amount"])
     col_total   = find_col(df, ["Invoice_Total", "Total"])
     col_invoice = find_col(df, ["Invoice_ID", "InvoiceID"])
@@ -69,7 +74,7 @@ def build_audit(df_raw: pd.DataFrame):
 
     issues = []
 
-    # 1. Math Integrity Check (General Definition Logic)
+    # 1. Math Integrity Check
     mismatch = df[df["__L"] != df["__T"]]
     if not mismatch.empty:
         amt = (mismatch["__T"] - mismatch["__L"]).abs().sum()
@@ -102,17 +107,17 @@ def forensic_bot(query):
             "internally consistent. It independently recalculates the sum of all itemized charges (Line Amounts) "
             "and compares them against the final billed amount (Invoice Total) to uncover discrepancies."
         )
-    return "I am the ClearSpend AI. Ask me about Math Integrity or duplicates!"
+    return "I am the ClearSpend AI. Ask me about Math Integrity or Duplicates!"
 
 # ----------------------------
-# 5) UI Logic (Login)
+# 5) UI: Login / Signup
 # ----------------------------
 if not st.session_state["logged_in"]:
     st.title("🛡️ ClearSpend Security Portal")
     t1, t2 = st.tabs(["Login", "Create Account"])
     with t1:
-        u = st.text_input("Username", key="login_u")
-        p = st.text_input("Password", type="password", key="login_p")
+        u = st.text_input("Username", key="l_u")
+        p = st.text_input("Password", type="password", key="l_p")
         if st.button("Log In", use_container_width=True):
             if u in st.session_state["accounts"] and st.session_state["accounts"][u]["pw"] == p:
                 st.session_state["logged_in"] = True
@@ -122,11 +127,11 @@ if not st.session_state["logged_in"]:
             else:
                 st.error("❌ Invalid Username or Password. Please try again.")
     with t2:
-        st.text_input("Username", key="s_u")
-        st.text_input("Password", type="password", key="s_p")
+        nu = st.text_input("Username", key="s_u")
+        np = st.text_input("Password", type="password", key="s_p")
         if st.button("Sign Up"):
             st.balloons()
-            st.success("✅ Account created!")
+            st.success("✅ Account created! Use the Login tab.")
 
 # ----------------------------
 # 6) Main Dashboard
@@ -146,37 +151,45 @@ else:
                 st.session_state.messages.append({"role": "assistant", "content": res})
                 st.rerun()
 
-        if st.button("Log Out"):
+        if st.button("Log Out", use_container_width=True):
             st.session_state["logged_in"] = False
+            st.session_state.messages = []
             st.rerun()
 
     st.title(f"📊 {st.session_state['org_name']} Recovery Dashboard")
-    f = st.file_uploader("Upload Ledger", type=["csv", "xlsx"])
+    f = st.file_uploader("Upload Ledger (CSV or Excel)", type=["csv", "xlsx"])
 
     if f:
         df_raw = pd.read_csv(f) if f.name.endswith('.csv') else pd.read_excel(f)
         audit_df = build_audit(df_raw)
         
         if not audit_df.empty:
-            st.metric("Recoverable Cash", f"${audit_df['Amount ($)'].sum():,.2f}")
+            st.metric("Recoverable Cash Found", f"${audit_df['Amount ($)'].sum():,.2f}")
             
             st.divider()
             col_f, col_c = st.columns([1, 1.5])
             
             with col_f:
                 st.write("### 🔍 Findings")
-                # FIXED: This adds the filter back properly
+                # Filter Logic
                 options = audit_df["Category"].unique().tolist()
-                selected_cats = st.multiselect("Filter by Category", options, default=options)
+                selected_cats = st.multiselect("Select Issue Types", options, default=options)
                 filtered_df = audit_df[audit_df["Category"].isin(selected_cats)]
                 st.dataframe(filtered_df, use_container_width=True, hide_index=True)
             
             with col_c:
                 st.write("### 📈 Risk Distribution")
-                # FIXED: The chart now reacts to the filter above
+                # Chart responds to multiselect filter
                 st.bar_chart(data=filtered_df, x="Category", y="Amount ($)")
             
             st.divider()
-            # FIXED: Encoding and index removal to stop weird symbols in CSV
-            csv_data = filtered_df.to_csv(index=False).encode('utf-8')
-            st.download_button("Download Recovery Report (CSV)", data=csv_data, file_name="ClearSpend_Audit.csv")
+            # Special 'utf-8-sig' encoding prevents weird symbols in Excel
+            csv_data = filtered_df.to_csv(index=False).encode('utf-8-sig')
+            st.download_button(
+                label="Download Recovery Report (CSV)", 
+                data=csv_data, 
+                file_name="ClearSpend_Audit_Report.csv",
+                mime="text/csv"
+            )
+        else:
+            st.success("✅ Audit Complete: No mathematical discrepancies found!")
