@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import time
 
 # ----------------------------
 # 1) Page Configuration
@@ -33,9 +32,12 @@ if "accounts" not in st.session_state:
     st.session_state["accounts"] = {"admin": {"pw": "uic2026", "name": "Raghini Kumar", "org": "UIC"}}
 if "messages" not in st.session_state:
     st.session_state.messages = []
+# Added memory for the audit data so it stays visible
+if "audit_data" not in st.session_state:
+    st.session_state.audit_data = None
 
 # ----------------------------
-# 3) Forensic Engine (All 5 Validations)
+# 3) Forensic Engine
 # ----------------------------
 def _norm(s: str) -> str:
     return "".join(ch.lower() for ch in str(s).strip() if ch.isalnum())
@@ -49,7 +51,6 @@ def find_col(df: pd.DataFrame, candidates: list[str]):
 def build_audit(df_raw: pd.DataFrame):
     if df_raw.empty: return pd.DataFrame()
     df = df_raw.copy()
-    
     for col in df.columns:
         if df[col].dtype == 'object':
             df[col] = df[col].astype(str).str.replace(r'[$,]', '', regex=True)
@@ -73,17 +74,17 @@ def build_audit(df_raw: pd.DataFrame):
 
     issues = []
 
-    # 1. Math Integrity
+    # Math Integrity
     mismatch = df[df["__L"] != df["__T"]]
     if not mismatch.empty:
         issues.append({"Category": "Math Integrity Check", "Amount ($)": float((mismatch["__T"] - mismatch["__L"]).abs().sum()), "Priority": "🔴 Critical"})
     
-    # 2. Duplicate Invoice
+    # Duplicate Invoice
     dup_ids = df["__ID"][df["__ID"].duplicated(keep=False)]
     if not dup_ids.empty and (df["__ID"] != "N/A").any():
         issues.append({"Category": "Duplicate Invoice", "Amount ($)": float(df[df["__ID"].isin(dup_ids.unique())]["__T"].sum()), "Priority": "🔴 Critical"})
 
-    # 3. Price Creep
+    # Price Creep
     creep_amt = 0
     for v, group in df.sort_values("__D").groupby("__V"):
         if len(group) > 1:
@@ -92,12 +93,12 @@ def build_audit(df_raw: pd.DataFrame):
     if creep_amt > 0:
         issues.append({"Category": "Price Creep", "Amount ($)": float(creep_amt), "Priority": "🟠 High"})
 
-    # 4. Negative Leak
+    # Negative Leak
     negs = df[df["__L"] < 0]
     if not negs.empty:
         issues.append({"Category": "Negative Leak", "Amount ($)": float(negs["__L"].abs().sum()), "Priority": "🟣 High"})
 
-    # 5. Pricing Inconsistency
+    # Pricing Inconsistency
     if col_unit:
         variance = df.groupby("__V")["__U"].nunique()
         inc_count = (variance > 1).sum()
@@ -107,33 +108,31 @@ def build_audit(df_raw: pd.DataFrame):
     return pd.DataFrame(issues)
 
 # ----------------------------
-# 4) Chatbot Logic
+# 4) Chatbot Logic (Bullet points, no numbers)
 # ----------------------------
 def forensic_bot(query):
     query = query.lower()
-    
     if "site" in query or "do" in query or "clearspend" in query:
         return "**ClearSpend Analytics** is a forensic audit platform that identifies financial leaks in Accounts Payable data to recover lost capital."
     elif "math" in query or "integrity" in query:
-        return "**1. Math Integrity Check:** A Digital Receipt Validator that ensures Line Amounts match the Invoice Total."
+        return "* **Math Integrity Check:** A Digital Receipt Validator that ensures Line Amounts match the Invoice Total."
     elif "duplicate" in query:
-        return "**2. Duplicate Invoice:** Scans for identical Invoice IDs to prevent paying the same bill twice."
+        return "* **Duplicate Invoice:** Scans for identical Invoice IDs to prevent paying the same bill twice."
     elif "creep" in query:
-        return "**3. Price Creep:** Monitors unit price increases over time for the same vendor items."
+        return "* **Price Creep:** Monitors unit price increases over time for the same vendor items."
     elif "negative" in query or "leak" in query:
-        return "**4. Negative Leak:** Identifies negative values/credits that haven't been successfully recovered."
+        return "* **Negative Leak:** Identifies negative values/credits that haven't been successfully recovered."
     elif "inconsistency" in query:
-        return "**5. Pricing Inconsistency:** Checks if a vendor charges different prices for the same service across different locations."
-    
-    return "I am the ClearSpend AI. Ask me about our 5 forensic checks!"
+        return "* **Pricing Inconsistency:** Checks if a vendor charges different prices for the same service across different locations."
+    return "I am the ClearSpend AI. Ask me about our forensic checks!"
 
 # ----------------------------
 # 5) UI Flow: Login & Dashboard
 # ----------------------------
 if not st.session_state["logged_in"]:
     st.title("🛡️ ClearSpend Security Portal")
-    u = st.text_input("Username", key="login_user")
-    p = st.text_input("Password", type="password", key="login_pass")
+    u = st.text_input("Username", key="l_user")
+    p = st.text_input("Password", type="password", key="l_pass")
     if st.button("Log In", use_container_width=True):
         if u in st.session_state["accounts"] and st.session_state["accounts"][u]["pw"] == p:
             st.session_state["logged_in"] = True
@@ -159,15 +158,20 @@ else:
 
         if st.button("Log Out", use_container_width=True):
             st.session_state["logged_in"] = False
+            st.session_state.audit_data = None
             st.rerun()
 
     st.title(f"📊 {st.session_state['org_name']} Recovery Dashboard")
     f = st.file_uploader("Upload Financial Ledger", type=["csv", "xlsx"])
 
+    # If new file is uploaded, run audit and save to state
     if f:
         df_raw = pd.read_csv(f) if f.name.endswith('.csv') else pd.read_excel(f)
-        audit_df = build_audit(df_raw)
-        
+        st.session_state.audit_data = build_audit(df_raw)
+
+    # Display audit if it exists in memory
+    if st.session_state.audit_data is not None:
+        audit_df = st.session_state.audit_data
         if not audit_df.empty:
             st.metric("Total Recoverable Cash Found", f"${audit_df['Amount ($)'].sum():,.2f}")
             col1, col2 = st.columns([1, 1.5])
