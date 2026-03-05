@@ -21,10 +21,11 @@ div[data-testid="stMetric"] {
     box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
 }
 h1, h2, h3 { color: #0f172a !important; }
-/* Ensure the chatbot text stays BOLD */
+/* Bolder Chatbot Responses */
 [data-testid="stChatMessage"] p { 
     color: #000000 !important; 
     font-weight: 700 !important; 
+    font-size: 1.05rem;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -75,28 +76,28 @@ def build_audit(df_raw: pd.DataFrame):
         if df[col].dtype == 'object':
             df[col] = df[col].astype(str).str.replace(r'[$,]', '', regex=True)
 
-    col_lineamt = find_col(df, ["Line_Amount", "Amount"])
-    col_total   = find_col(df, ["Invoice_Total", "Total"])
-    col_invoice = find_col(df, ["Invoice_ID", "InvoiceID"])
-    col_unit    = find_col(df, ["Unit_Price", "Price"])
-    col_vendor  = find_col(df, ["Vendor_Name", "Vendor"])
-    col_date    = find_col(df, ["Invoice_Date", "Date"])
+    c_amt = find_col(df, ["Line_Amount", "Amount"])
+    c_tot = find_col(df, ["Invoice_Total", "Total"])
+    c_id = find_col(df, ["Invoice_ID", "InvoiceID"])
+    c_unit = find_col(df, ["Unit_Price", "Price"])
+    c_ven = find_col(df, ["Vendor_Name", "Vendor"])
+    c_date = find_col(df, ["Invoice_Date", "Date"])
 
-    if not col_lineamt or not col_total: return pd.DataFrame()
+    if not c_amt or not c_tot: return pd.DataFrame()
 
-    df["__L"] = pd.to_numeric(df[col_lineamt], errors='coerce').fillna(0)
-    df["__T"] = pd.to_numeric(df[col_total], errors='coerce').fillna(0)
-    df["__U"] = pd.to_numeric(df[col_unit], errors='coerce').fillna(0) if col_unit else 0
-    df["__ID"] = df[col_invoice].astype(str) if col_invoice else "N/A"
-    df["__V"] = df[col_vendor].astype(str) if col_vendor else "N/A"
-    df["__D"] = pd.to_datetime(df[col_date], errors='coerce')
+    df["__L"] = pd.to_numeric(df[c_amt], errors='coerce').fillna(0)
+    df["__T"] = pd.to_numeric(df[c_tot], errors='coerce').fillna(0)
+    df["__U"] = pd.to_numeric(df[c_unit], errors='coerce').fillna(0) if c_unit else 0
+    df["__ID"] = df[c_id].astype(str) if c_id else "N/A"
+    df["__V"] = df[c_ven].astype(str) if c_ven else "N/A"
+    df["__D"] = pd.to_datetime(df[c_date], errors='coerce')
 
     issues = []
     
     # 1. Math Integrity
-    mismatch = df[df["__L"] != df["__T"]]
-    if not mismatch.empty:
-        issues.append({"Category": "Math Integrity Check", "Amount ($)": float((mismatch["__T"] - mismatch["__L"]).abs().sum()), "Priority": "🔴 Critical"})
+    mm = df[df["__L"] != df["__T"]]
+    if not mm.empty:
+        issues.append({"Category": "Math Integrity Check", "Amount ($)": float((mm["__T"] - mm["__L"]).abs().sum()), "Priority": "🔴 Critical"})
     
     # 2. Duplicate Invoice
     dup_ids = df["__ID"][df["__ID"].duplicated(keep=False)]
@@ -118,9 +119,8 @@ def build_audit(df_raw: pd.DataFrame):
         issues.append({"Category": "Negative Leak", "Amount ($)": float(negs["__L"].abs().sum()), "Priority": "🟣 High"})
     
     # 5. Pricing Inconsistency
-    if col_unit:
-        variance = df.groupby("__V")["__U"].nunique()
-        inc_count = (variance > 1).sum()
+    if c_unit:
+        inc_count = (df.groupby("__V")["__U"].nunique() > 1).sum()
         if inc_count > 0:
             issues.append({"Category": "Pricing Inconsistency", "Amount ($)": float(inc_count * 500), "Priority": "🟡 Medium"})
 
@@ -158,6 +158,10 @@ if not st.session_state["logged_in"]:
         if st.button("Log In", use_container_width=True):
             accounts = load_accounts()
             if u in accounts and accounts[u]["pw"] == p:
+                # CLEAR PREVIOUS DATA UPON NEW LOGIN
+                st.session_state.messages = []
+                st.session_state.audit_data = None
+                
                 st.session_state["logged_in"] = True
                 st.session_state["user_name"] = accounts[u]["name"]
                 st.session_state["org_name"] = accounts[u].get("org", "UIC")
@@ -171,11 +175,10 @@ if not st.session_state["logged_in"]:
         new_p = st.text_input("Choose Password", type="password", key="s_pass")
         new_n = st.text_input("Full Name", key="s_name")
         new_o = st.text_input("Organization", key="s_org")
-        
         if st.button("Create Account", use_container_width=True):
             accounts = load_accounts()
             if new_u in accounts:
-                st.error("⚠️ **Account already created for this username.**")
+                st.error("⚠️ **Account already exists for this username.**")
             elif new_u and new_p and new_n:
                 save_account(new_u, {"pw": new_p, "name": new_n, "org": new_o})
                 st.balloons()
@@ -203,10 +206,13 @@ else:
 
         if st.button("Log Out", use_container_width=True):
             st.session_state["logged_in"] = False
+            # Clear data on manual logout too
+            st.session_state.messages = []
+            st.session_state.audit_data = None
             st.rerun()
 
     st.title(f"📊 {st.session_state['org_name']} Recovery Dashboard")
-    f = st.file_uploader("Upload Ledger", type=["csv", "xlsx"])
+    f = st.file_uploader("Upload AP Ledger (CSV or XLSX)", type=["csv", "xlsx"])
 
     if f:
         df_raw = pd.read_csv(f) if f.name.endswith('.csv') else pd.read_excel(f)
