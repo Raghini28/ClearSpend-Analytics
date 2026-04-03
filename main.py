@@ -152,20 +152,17 @@ if not st.session_state["logged_in"]:
     st.title("🛡️ ClearSpend Security Portal")
     tab_login, tab_signup = st.tabs(["Login", "Create Account"])
     
-    with tab_login:
-        u = st.text_input("Username", key="l_user")
-        p = st.text_input("Password", type="password", key="l_pass")
-       if st.button("Log In", use_container_width=True):
-            # THIS IS THE FIX: Refresh the account list from the file immediately
-            accounts = load_accounts() 
-            
+with tab_login:
+        u_in = st.text_input("Username", key="l_u")
+        p_in = st.text_input("Password", type="password", key="l_p")
+        
+        # This 'if' must line up perfectly with the 'u_in' above it
+        if st.button("Log In", use_container_width=True):
+            accounts = load_accounts() # THE FIX: Added this line only
             if u_in in accounts and accounts[u_in]["pw"] == p_in:
                 st.session_state["logged_in"] = True
                 st.session_state["user_name"] = accounts[u_in]["name"]
-                
-                # Optional: Add your balloons here if you want them
                 st.balloons()
-                
                 st.rerun()
             else:
                 st.error("❌ Account not recognized or wrong password.")
