@@ -36,6 +36,7 @@ h1, h2, h3 { color: #0f172a !important; }
 USER_FILE = "users_db.json"
 
 def load_accounts():
+    """Always reads from disk to prevent 'forgotten' accounts after inactivity."""
     if os.path.exists(USER_FILE):
         with open(USER_FILE, "r") as f:
             return json.load(f)
@@ -58,7 +59,7 @@ if "audit_data" not in st.session_state:
     st.session_state.audit_data = None
 
 # ----------------------------
-# 4) Forensic Engine (The 5 Leaks)
+# 4) Forensic Engine (Updated for chatgpt.csv)
 # ----------------------------
 def _norm(s: str) -> str:
     return "".join(ch.lower() for ch in str(s).strip() if ch.isalnum())
@@ -76,12 +77,13 @@ def build_audit(df_raw: pd.DataFrame):
         if df[col].dtype == 'object':
             df[col] = df[col].astype(str).str.replace(r'[$,]', '', regex=True)
 
-    c_amt = find_col(df, ["Line_Amount", "Amount"])
-    c_tot = find_col(df, ["Invoice_Total", "Total"])
-    c_id = find_col(df, ["Invoice_ID", "InvoiceID"])
-    c_unit = find_col(df, ["Unit_Price", "Price"])
-    c_ven = find_col(df, ["Vendor_Name", "Vendor"])
-    c_date = find_col(df, ["Invoice_Date", "Date"])
+    # UPDATED MAPPING: Included chatgpt.csv headers like AMOUNT_USD and TRANSACTION_ID
+    c_amt = find_col(df, ["Line_Amount", "Amount", "AMOUNT_USD", "BOOKING_VALUE_USD"])
+    c_tot = find_col(df, ["Invoice_Total", "Total", "NET_CASH_IMPACT_USD"])
+    c_id = find_col(df, ["Invoice_ID", "InvoiceID", "TRANSACTION_ID", "BOOKING_KEY"])
+    c_unit = find_col(df, ["Unit_Price", "Price", "FX_RATE_TO_USD"])
+    c_ven = find_col(df, ["Vendor_Name", "Vendor", "SUPPLIER_KEY", "SUPPLIER_CATEGORY"])
+    c_date = find_col(df, ["Invoice_Date", "Date", "TRANSACTION_TS", "BOOKING_TS"])
 
     if not c_amt or not c_tot: return pd.DataFrame()
 
@@ -156,14 +158,14 @@ if not st.session_state["logged_in"]:
         u = st.text_input("Username", key="l_user")
         p = st.text_input("Password", type="password", key="l_pass")
         if st.button("Log In", use_container_width=True):
+            # FIX: Load from disk every time so it doesn't forget users
             accounts = load_accounts()
             if u in accounts and accounts[u]["pw"] == p:
-                # CLEAR PREVIOUS DATA UPON NEW LOGIN
                 st.session_state.messages = []
                 st.session_state.audit_data = None
-                
                 st.session_state["logged_in"] = True
                 st.session_state["user_name"] = accounts[u]["name"]
+                # KEYERROR FIX: Ensure org_name is always stored
                 st.session_state["org_name"] = accounts[u].get("org", "UIC")
                 st.rerun()
             else:
@@ -192,7 +194,10 @@ if not st.session_state["logged_in"]:
 else:
     with st.sidebar:
         st.markdown('<p class="brand-text">💎 ClearSpend</p>', unsafe_allow_html=True)
-        st.info(f"👤 **{st.session_state['user_name']}** | 🏢 **{st.session_state['org_name']}**")
+        # Using .get() for safety
+        u_disp = st.session_state.get('user_name', 'User')
+        o_disp = st.session_state.get('org_name', 'ClearSpend Partner')
+        st.info(f"👤 **{u_disp}** | 🏢 **{o_disp}**")
         
         st.subheader("🤖 AI Assistant")
         with st.container():
@@ -206,12 +211,13 @@ else:
 
         if st.button("Log Out", use_container_width=True):
             st.session_state["logged_in"] = False
-            # Clear data on manual logout too
             st.session_state.messages = []
             st.session_state.audit_data = None
             st.rerun()
 
-    st.title(f"📊 {st.session_state['org_name']} Recovery Dashboard")
+    # Dynamic Title
+    title_org = st.session_state.get('org_name', 'Organization')
+    st.title(f"📊 {title_org} Recovery Dashboard")
     f = st.file_uploader("Upload AP Ledger (CSV or XLSX)", type=["csv", "xlsx"])
 
     if f:
