@@ -3,7 +3,10 @@ import pandas as pd
 import json
 import hashlib
 import secrets
+import hmac
+import sqlite3
 from pathlib import Path
+from datetime import datetime, timedelta
 
 # ----------------------------
 # 1) Page Configuration
@@ -36,9 +39,18 @@ h1, h2, h3 { color: #0f172a !important; }
 """, unsafe_allow_html=True)
 
 # ----------------------------
-# 2) Persistence & Auth Logic
+# 2) Authentication / User DB
 # ----------------------------
-USER_FILE = Path("users_db.json")
+DB_FILE = Path("clearspend_auth.db")
+SESSION_TIMEOUT_MINUTES = 30
+MAX_FAILED_ATTEMPTS = 5
+LOCKOUT_MINUTES = 15
+
+
+def get_db():
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 def hash_password(password: str, salt: str | None = None) -> str:
@@ -48,7 +60,7 @@ def hash_password(password: str, salt: str | None = None) -> str:
         "sha256",
         password.encode("utf-8"),
         salt.encode("utf-8"),
-        100_000
+        200_000
     ).hex()
     return f"{salt}${pwd_hash}"
 
@@ -60,39 +72,205 @@ def verify_password(password: str, stored_value: str) -> bool:
             "sha256",
             password.encode("utf-8"),
             salt.encode("utf-8"),
-            100_000
+            200_000
         ).hex()
-        return secrets.compare_digest(test_hash, saved_hash)
+        return hmac.compare_digest(test_hash, saved_hash)
     except Exception:
         return False
 
 
-def load_accounts():
-    if USER_FILE.exists():
-        try:
-            with open(USER_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, OSError):
-            pass
+def init_auth_db():
+    conn = get_db()
+    cur = conn.cursor()
 
-    return {
-        "admin": {
-            "pw": hash_password("uic2026"),
-            "name": "Raghini Kumar",
-            "org": "UIC"
-        }
-    }
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL,
+            full_name TEXT NOT NULL,
+            organization TEXT,
+            role TEXT DEFAULT 'user',
+            failed_attempts INTEGER DEFAULT 0,
+            locked_until TEXT,
+            created_at TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+
+    cur.execute("SELECT username FROM users WHERE username = ?", ("admin",))
+    if cur.fetchone() is None:
+        cur.execute("""
+            INSERT INTO users (
+                username, password_hash, full_name, organization, role, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            "admin",
+            hash_password("uic2026"),
+            "Raghini Kumar",
+            "UIC",
+            "admin",
+            datetime.utcnow().isoformat()
+        ))
+        conn.commit()
+
+    conn.close()
 
 
-def save_account(username, data):
-    accounts = load_accounts()
-    accounts[username] = data
-    with open(USER_FILE, "w", encoding="utf-8") as f:
-        json.dump(accounts, f, indent=2)
+def get_user(username: str):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE username = ?", (username,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def create_user(username: str, password: str, full_name: str, organization: str, role: str = "user"):
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute("SELECT username FROM users WHERE username = ?", (username,))
+    if cur.fetchone():
+        conn.close()
+        return False, "Username already exists."
+
+    cur.execute("""
+        INSERT INTO users (
+            username, password_hash, full_name, organization, role, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+    """, (
+        username,
+        hash_password(password),
+        full_name,
+        organization,
+        role,
+        datetime.utcnow().isoformat()
+    ))
+    conn.commit()
+    conn.close()
+    return True, "Account created successfully."
+
+
+def is_locked(user_row) -> tuple[bool, str]:
+    locked_until = user_row["locked_until"]
+    if not locked_until:
+        return False, ""
+
+    try:
+        until_dt = datetime.fromisoformat(locked_until)
+        if datetime.utcnow() < until_dt:
+            mins = int((until_dt - datetime.utcnow()).total_seconds() // 60) + 1
+            return True, f"Account locked. Try again in {mins} minute(s)."
+    except Exception:
+        pass
+
+    return False, ""
+
+
+def reset_failed_attempts(username: str):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE users
+        SET failed_attempts = 0,
+            locked_until = NULL
+        WHERE username = ?
+    """, (username,))
+    conn.commit()
+    conn.close()
+
+
+def record_failed_attempt(username: str, current_failed_attempts: int):
+    conn = get_db()
+    cur = conn.cursor()
+
+    new_attempts = current_failed_attempts + 1
+    locked_until = None
+
+    if new_attempts >= MAX_FAILED_ATTEMPTS:
+        locked_until = (datetime.utcnow() + timedelta(minutes=LOCKOUT_MINUTES)).isoformat()
+
+    cur.execute("""
+        UPDATE users
+        SET failed_attempts = ?,
+            locked_until = ?
+        WHERE username = ?
+    """, (new_attempts, locked_until, username))
+    conn.commit()
+    conn.close()
+
+
+def authenticate_user(username: str, password: str):
+    user = get_user(username)
+    if not user:
+        return False, "Invalid username or password.", None
+
+    locked, msg = is_locked(user)
+    if locked:
+        return False, msg, None
+
+    if verify_password(password, user["password_hash"]):
+        reset_failed_attempts(username)
+        return True, "Login successful.", user
+
+    record_failed_attempt(username, user["failed_attempts"])
+    return False, "Invalid username or password.", None
+
+
+def start_session(user_row):
+    st.session_state["logged_in"] = True
+    st.session_state["user_name"] = user_row["full_name"]
+    st.session_state["org_name"] = user_row["organization"] or "N/A"
+    st.session_state["role"] = user_row["role"]
+    st.session_state["username"] = user_row["username"]
+    st.session_state["session_expires_at"] = (
+        datetime.utcnow() + timedelta(minutes=SESSION_TIMEOUT_MINUTES)
+    ).isoformat()
+
+
+def logout_user():
+    for key in [
+        "logged_in", "user_name", "org_name", "role", "username",
+        "session_expires_at", "messages", "audit_data",
+        "audit_detail", "recovery_tracker"
+    ]:
+        if key in st.session_state:
+            del st.session_state[key]
+
+    st.session_state.setdefault("logged_in", False)
+    st.session_state.setdefault("messages", [])
+    st.session_state.setdefault("audit_data", None)
+    st.session_state.setdefault("audit_detail", {})
+    st.session_state.setdefault("recovery_tracker", pd.DataFrame())
+
+
+def enforce_session_timeout():
+    if not st.session_state.get("logged_in"):
+        return
+
+    expires = st.session_state.get("session_expires_at")
+    if not expires:
+        return
+
+    try:
+        if datetime.utcnow() > datetime.fromisoformat(expires):
+            logout_user()
+            st.warning("Your session expired. Please log in again.")
+            st.rerun()
+    except Exception:
+        logout_user()
+        st.rerun()
+
+
+def refresh_session():
+    if st.session_state.get("logged_in"):
+        st.session_state["session_expires_at"] = (
+            datetime.utcnow() + timedelta(minutes=SESSION_TIMEOUT_MINUTES)
+        ).isoformat()
 
 
 # ----------------------------
-# 3) State Management
+# 3) Session State
 # ----------------------------
 st.session_state.setdefault("logged_in", False)
 st.session_state.setdefault("messages", [])
@@ -100,9 +278,11 @@ st.session_state.setdefault("audit_data", None)
 st.session_state.setdefault("audit_detail", {})
 st.session_state.setdefault("recovery_tracker", pd.DataFrame())
 
+init_auth_db()
+enforce_session_timeout()
 
 # ----------------------------
-# 4) Forensic Engine Helpers
+# 4) Forensic Helpers
 # ----------------------------
 def _norm(s: str) -> str:
     return "".join(ch.lower() for ch in str(s).strip() if ch.isalnum())
@@ -173,7 +353,6 @@ def detect_duplicates_fast(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame
     work["Date Only"] = pd.to_datetime(work["__D"], errors="coerce").dt.date
     work["Amount Rounded"] = work["__L"].round(2)
 
-    # Exact duplicate IDs
     exact = work[
         work["__ID"].notna() &
         work["__ID"].ne("N/A") &
@@ -186,12 +365,10 @@ def detect_duplicates_fast(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame
         exact["Why Flagged"] = "Same transaction ID appears multiple times"
         exact["Estimated Exposure"] = exact["__L"].abs()
 
-    # Potential duplicates: same vendor + same amount + same date
     potential = work[
         work.duplicated(subset=["__V", "Amount Rounded", "Date Only"], keep=False)
     ].copy()
 
-    # Remove rows already caught as exact duplicates from potential duplicates
     if not exact.empty:
         exact_refs = set(exact["Row Ref"].tolist())
         potential = potential[~potential["Row Ref"].isin(exact_refs)].copy()
@@ -267,7 +444,7 @@ def build_audit(df_raw: pd.DataFrame):
             ["Row Ref", "__ID", "__V", "__L", "__T", "Variance", "Variance %", "Confidence", "Why Flagged"]
         ]
 
-    # 2. Fast duplicate detection
+    # 2. Duplicate Detection
     exact_dups, potential_dups = detect_duplicates_fast(df)
 
     if not exact_dups.empty:
@@ -300,7 +477,7 @@ def build_audit(df_raw: pd.DataFrame):
             ["Row Ref", "__ID", "__V", "__L", "__D", "Confidence", "Why Flagged", "Estimated Exposure"]
         ]
 
-    # 3. Trend Price Creep by vendor + product
+    # 3. Trend Price Creep
     creep_records = []
     if c_unit and c_date and c_ven:
         for keys, group in df.sort_values("__D").groupby(["__V", "__P"]):
@@ -340,7 +517,7 @@ def build_audit(df_raw: pd.DataFrame):
         )
         details["Trend Price Creep"] = creep_df
 
-    # 4. Negative Leak / Refund Categorization
+    # 4. Negative Leak
     negs = df[df["__L"] < 0].copy()
     if not negs.empty:
         negs["Negative Type"] = "Unclassified Negative"
@@ -369,7 +546,7 @@ def build_audit(df_raw: pd.DataFrame):
             ["Row Ref", "__ID", "__V", "__L", "Negative Type", "__DESC", "Why Flagged"]
         ]
 
-    # 5. Contract Variance / Pricing Inconsistency
+    # 5. Contract Variance
     if c_unit and c_ven:
         valid = df[df["__U"] > 0].copy()
         if not valid.empty:
@@ -446,11 +623,10 @@ def forensic_bot(query):
 
 
 # ----------------------------
-# 8) UI Flow: Login & Signup
+# 8) Login / Signup UI
 # ----------------------------
 if not st.session_state["logged_in"]:
     st.title("🛡️ ClearSpend Security Portal")
-    st.caption("Demo build: password hashing added, but this is still not production authentication.")
 
     tab_login, tab_signup = st.tabs(["Login", "Create Account"])
 
@@ -459,15 +635,13 @@ if not st.session_state["logged_in"]:
         p = st.text_input("Password", type="password", key="l_pass")
 
         if st.button("Log In", use_container_width=True):
-            accounts = load_accounts()
-            if u in accounts and verify_password(p, accounts[u]["pw"]):
-                st.session_state["logged_in"] = True
-                st.session_state["user_name"] = accounts[u]["name"]
-                st.session_state["org_name"] = accounts[u].get("org", "UIC")
-                st.session_state["messages"] = []
+            ok, msg, user = authenticate_user(u.strip(), p)
+            if ok and user is not None:
+                start_session(user)
+                st.success(msg)
                 st.rerun()
             else:
-                st.error("❌ Invalid username or password")
+                st.error(msg)
 
     with tab_signup:
         new_u = st.text_input("Choose Username", key="s_user")
@@ -476,28 +650,28 @@ if not st.session_state["logged_in"]:
         new_o = st.text_input("Organization", key="s_org")
 
         if st.button("Create Account", use_container_width=True):
-            accounts = load_accounts()
-
             if not new_u or not new_p or not new_n:
-                st.warning("⚠️ Please fill in all required fields.")
-            elif new_u in accounts:
-                st.error("⚠️ That username already exists.")
+                st.warning("Please fill in all required fields.")
             elif len(new_p) < 8:
-                st.warning("⚠️ Password must be at least 8 characters.")
+                st.warning("Password must be at least 8 characters.")
             else:
-                save_account(new_u, {
-                    "pw": hash_password(new_p),
-                    "name": new_n,
-                    "org": new_o
-                })
-                st.balloons()
-                st.success("✅ Account created successfully. You can now log in.")
-
+                ok, msg = create_user(
+                    username=new_u.strip(),
+                    password=new_p,
+                    full_name=new_n.strip(),
+                    organization=new_o.strip()
+                )
+                if ok:
+                    st.success(msg)
+                else:
+                    st.error(msg)
 
 # ----------------------------
-# 9) UI Flow: Dashboard
+# 9) Dashboard UI
 # ----------------------------
 else:
+    refresh_session()
+
     with st.sidebar:
         st.markdown('<p class="brand-text">💎 ClearSpend</p>', unsafe_allow_html=True)
         st.info(f"👤 **{st.session_state['user_name']}** | 🏢 **{st.session_state['org_name']}**")
@@ -515,11 +689,7 @@ else:
             st.rerun()
 
         if st.button("Log Out", use_container_width=True):
-            st.session_state["logged_in"] = False
-            st.session_state["messages"] = []
-            st.session_state["audit_data"] = None
-            st.session_state["audit_detail"] = {}
-            st.session_state["recovery_tracker"] = pd.DataFrame()
+            logout_user()
             st.rerun()
 
     st.title(f"📊 {st.session_state['org_name']} Recovery Dashboard")
