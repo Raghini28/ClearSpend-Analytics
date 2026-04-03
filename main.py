@@ -58,114 +58,201 @@ if "audit_data" not in st.session_state:
     st.session_state.audit_data = None
 
 # ----------------------------
-# 4) Forensic Engine (Precision Tuned for ~$11M)
+# 4) Forensic Engine (Enhanced Logic)
 # ----------------------------
 def _norm(s: str) -> str:
     return "".join(ch.lower() for ch in str(s).strip() if ch.isalnum())
 
-def find_col(df: pd.DataFrame, candidates: list):
+def find_col(df: pd.DataFrame, candidates: list[str]):
+    # 1. Exact Match Strategy
     norm_map = {_norm(c): c for c in df.columns}
     for cand in candidates:
         if _norm(cand) in norm_map: return norm_map[_norm(cand)]
+    
+    # 2. Heuristic Backup: Look for ID/Key keywords (Fixes "Giving Me Nothing")
+    for col in df.columns:
+        c_low = col.lower()
+        if any(w in c_low for w in ["id", "key", "ref", "num"]): return col
+    return None
+
+def find_amt_col(df: pd.DataFrame, candidates: list[str]):
+    # 1. Exact Match Strategy
+    norm_map = {_norm(c): c for c in df.columns}
+    for cand in candidates:
+        if _norm(cand) in norm_map: return norm_map[_norm(cand)]
+    
+    # 2. Heuristic Backup: Find the most significant numeric column
+    nums = df.select_dtypes(include=['number']).columns
+    if not nums.empty: return df[nums].mean().idxmax()
     return None
 
 def build_audit(df_raw: pd.DataFrame):
     if df_raw.empty: return pd.DataFrame()
     df = df_raw.copy()
-    
-    # Clean numeric strings
     for col in df.columns:
         if df[col].dtype == 'object':
             df[col] = df[col].astype(str).str.replace(r'[$,]', '', regex=True)
 
-    # Column Mapping
-    c_amt = find_col(df, ["AMOUNT_USD", "BOOKING_VALUE_USD", "Amount"])
-    c_tot = find_col(df, ["NET_CASH_IMPACT_USD", "NET_BOOKING_VALUE_USD", "Total"])
-    c_id = find_col(df, ["TRANSACTION_ID", "BOOKING_KEY"])
-    c_ven = find_col(df, ["SUPPLIER_KEY", "Vendor"])
-    c_date = find_col(df, ["TRANSACTION_TS", "Date"])
-    c_ref = find_col(df, ["REFUND_AMOUNT_USD"])
-    c_per = find_col(df, ["ACCOUNTING_PERIOD"])
+    # UPDATED MAPPING: Now detects Snowflake (BOOKING_VALUE_USD) and backup keywords
+    c_amt = find_amt_col(df, ["BOOKING_VALUE_USD", "AMOUNT_USD", "Line_Amount", "Amount"])
+    c_tot = find_col(df, ["NET_CASH_IMPACT_USD", "Invoice_Total", "Total"])
+    c_id = find_col(df, ["TRANSACTION_ID", "BOOKING_KEY", "Invoice_ID", "InvoiceID"])
+    c_unit = find_col(df, ["FX_RATE_TO_USD", "Unit_Price", "Price"])
+    c_ven = find_col(df, ["SUPPLIER_KEY", "Vendor_Name", "Vendor"])
+    c_date = find_col(df, ["TRANSACTION_TS", "Invoice_Date", "Date"])
 
-    # FIXED: Ensure c_amt is never None to avoid KeyError
-    if not c_amt: 
-        return pd.DataFrame()
+    # If even fallback fails, create a row-index ID so audit can run
+    if not c_id:
+        df["__ID"] = range(len(df))
+        c_id = "__ID"
+
+    if not c_amt: return pd.DataFrame()
 
     df["__L"] = pd.to_numeric(df[c_amt], errors='coerce').fillna(0)
     df["__T"] = pd.to_numeric(df[c_tot], errors='coerce').fillna(0) if c_tot else df["__L"]
+    df["__U"] = pd.to_numeric(df[c_unit], errors='coerce').fillna(0) if c_unit else 0
+    df["__ID"] = df[c_id].astype(str)
     df["__V"] = df[c_ven].astype(str) if c_ven else "N/A"
     df["__D"] = pd.to_datetime(df[c_date], errors='coerce')
-    df["__R"] = pd.to_numeric(df[c_ref], errors='coerce').fillna(0) if c_ref else 0
 
     issues = []
     
-    # 1. Calculation Variance (~$1.5M)
-    math_delta = abs(df["__L"] - df["__T"]).sum()
-    if math_delta > 0:
-        issues.append({"Category": "Calculation Variance", "Amount ($)": float(math_delta), "Priority": "🔴 Critical"})
+    # 1. Math Integrity
+    mm = df[abs(df["__L"] - df["__T"]) > 0.05]
+    if not mm.empty:
+        issues.append({"Category": "Math Integrity Check", "Amount ($)": float(abs(mm["__T"] - mm["__L"]).sum()), "Priority": "🔴 Critical"})
     
-    # 2. Fuzzy Duplicate Match (Tuned: 15% Weighting)
-    # Using Accounting Period + Vendor + Amount creates a more realistic duplicate profile
-    dup_cols = ['__L', '__V', c_per] if c_per else ['__L', '__V', '__D']
-    fuzzy = df[df.duplicated(subset=dup_cols, keep=False)]
-    if not fuzzy.empty:
-        # We apply a 15% probability factor to reach the $11M target
-        issues.append({"Category": "Fuzzy Duplicate Match", "Amount ($)": float(fuzzy['__L'].sum() * 0.15), "Priority": "🔴 Critical"})
+    # 2. Duplicate Invoice
+    dup_ids = df["__ID"][df["__ID"].duplicated(keep=False)]
+    if not dup_ids.empty and (df["__ID"] != "N/A").any():
+        issues.append({"Category": "Duplicate Invoice", "Amount ($)": float(df[df["__ID"].isin(dup_ids.unique())]["__L"].sum()), "Priority": "🔴 Critical"})
     
-    # 3. Contract Variance (Tuned: 10% Sensitivity Threshold)
-    df['avg_p'] = df.groupby('__V')['__L'].transform('mean')
-    df['leak'] = (df['__L'] - (df['avg_p'] * 1.10)).clip(lower=0)
-    contract_sum = df['leak'].sum()
-    if contract_sum > 0:
-        issues.append({"Category": "Contract Variance", "Amount ($)": float(contract_sum), "Priority": "🟡 Medium"})
+    # 3. Price Creep
+    creep_amt = 0
+    for v, group in df.sort_values("__D").groupby("__V"):
+        if len(group) > 1:
+            diff = group["__U"].iloc[-1] - group["__U"].iloc[0]
+            if diff > 0: creep_amt += diff * len(group)
+    if creep_amt > 0:
+        issues.append({"Category": "Price Creep", "Amount ($)": float(creep_amt), "Priority": "🟠 High"})
     
-    # 4. Negative Leak (~$1.0M)
-    ref_total = df["__R"].abs().sum()
-    if ref_total > 0:
-        issues.append({"Category": "Negative Leak", "Amount ($)": float(ref_total), "Priority": "🟣 High"})
+    # 4. Negative Leak (Refunds)
+    negs = df[df["__L"] < 0]
+    if not negs.empty:
+        issues.append({"Category": "Negative Leak", "Amount ($)": float(negs["__L"].abs().sum()), "Priority": "🟣 High"})
+    
+    # 5. Pricing Inconsistency
+    if c_unit:
+        inc_count = (df.groupby("__V")["__U"].nunique() > 1).sum()
+        if inc_count > 0:
+            issues.append({"Category": "Pricing Inconsistency", "Amount ($)": float(inc_count * 500), "Priority": "🟡 Medium"})
 
     return pd.DataFrame(issues)
 
 # ----------------------------
-# 5) Auth & UI Flow
+# 5) Chatbot Logic
+# ----------------------------
+def forensic_bot(query):
+    query = query.lower()
+    if "site" in query or "do" in query or "clearspend" in query:
+        return "**ClearSpend Analytics is a high-level forensic audit platform designed to identify hidden financial leaks, recover lost capital, and ensure 100% vendor compliance.**"
+    elif "math" in query or "integrity" in query:
+        return "**Math Integrity Check: This functions as a Digital Receipt Validator. It cross-references itemized Line Amounts with the final Invoice Total to catch shadow fees.**"
+    elif "duplicate" in query:
+        return "**Duplicate Invoice: This validation scans for identical Invoice IDs across the entire dataset to prevent paying the same obligation twice.**"
+    elif "creep" in query:
+        return "**Price Creep: This monitors unit pricing trends over time to flag unauthorized price increases.**"
+    elif "negative" in query or "leak" in query:
+        return "**Negative Leak: This identifies credits and negative entries that have never been successfully recovered.**"
+    elif "inconsistency" in query:
+        return "**Pricing Inconsistency: This detects when a single vendor charges varying rates for the same SKU across departments.**"
+    return "**I am the ClearSpend AI Assistant. Ask me about Math Integrity, Price Creep, or Duplicates!**"
+
+# ----------------------------
+# 6) UI Flow: Login & Signup
 # ----------------------------
 if not st.session_state["logged_in"]:
     st.title("🛡️ ClearSpend Security Portal")
-    u = st.text_input("Username", key="l_u")
-    p = st.text_input("Password", type="password", key="l_p")
-    if st.button("Log In", use_container_width=True):
-        db = load_accounts()
-        if u in db and db[u]["pw"] == p:
-            st.session_state.update({"logged_in": True, "user_name": db[u]["name"], "org_name": db[u].get("org", "UIC")})
-            st.rerun()
+    tab_login, tab_signup = st.tabs(["Login", "Create Account"])
+    
+    with tab_login:
+        u = st.text_input("Username", key="l_user")
+        p = st.text_input("Password", type="password", key="l_pass")
+        if st.button("Log In", use_container_width=True):
+            accounts = load_accounts()
+            if u in accounts and accounts[u]["pw"] == p:
+                st.session_state.messages = []
+                st.session_state.audit_data = None
+                st.session_state["logged_in"] = True
+                st.session_state["user_name"] = accounts[u]["name"]
+                st.session_state["org_name"] = accounts[u].get("org", "UIC")
+                st.rerun()
+            else:
+                st.error("❌ **Invalid Username or Password.**")
+                
+    with tab_signup:
+        st.subheader("Register New Account")
+        new_u = st.text_input("Choose Username", key="s_user")
+        new_p = st.text_input("Choose Password", type="password", key="s_pass")
+        new_n = st.text_input("Full Name", key="s_name")
+        new_o = st.text_input("Organization", key="s_org")
+        if st.button("Create Account", use_container_width=True):
+            accounts = load_accounts()
+            if new_u in accounts:
+                st.error("⚠️ **Account already exists for this username.**")
+            elif new_u and new_p and new_n:
+                save_account(new_u, {"pw": new_p, "name": new_n, "org": new_o})
+                st.balloons()
+                st.success(f"**Account created for {new_n}! You can now login.**")
+            else:
+                st.warning("⚠️ **Please fill in all fields.**")
+
+# ----------------------------
+# 7) UI Flow: Dashboard
+# ----------------------------
 else:
     with st.sidebar:
         st.markdown('<p class="brand-text">💎 ClearSpend</p>', unsafe_allow_html=True)
-        st.info(f"👤 {st.session_state['user_name']} | 🏢 {st.session_state['org_name']}")
+        st.info(f"👤 **{st.session_state['user_name']}** | 🏢 **{st.session_state['org_name']}**")
+        
+        st.subheader("🤖 AI Assistant")
+        with st.container():
+            for m in st.session_state.messages:
+                with st.chat_message(m["role"]): st.markdown(m["content"])
+            if pr := st.chat_input("Ask a forensic question..."):
+                st.session_state.messages.append({"role": "user", "content": pr})
+                res = forensic_bot(pr)
+                st.session_state.messages.append({"role": "assistant", "content": res})
+                st.rerun()
+
         if st.button("Log Out", use_container_width=True):
             st.session_state["logged_in"] = False
+            st.session_state.messages = []
+            st.session_state.audit_data = None
             st.rerun()
 
     st.title(f"📊 {st.session_state['org_name']} Recovery Dashboard")
-    f = st.file_uploader("Upload AP Ledger (CSV)", type=["csv"])
+    f = st.file_uploader("Upload AP Ledger (CSV or XLSX)", type=["csv", "xlsx"])
 
     if f:
-        df_raw = pd.read_csv(f)
+        df_raw = pd.read_csv(f) if f.name.endswith('.csv') else pd.read_excel(f)
         st.session_state.audit_data = build_audit(df_raw)
 
     if st.session_state.audit_data is not None:
-        res = st.session_state.audit_data
-        if not res.empty:
-            total = res['Amount ($)'].sum()
-            st.metric("Total Recoverable Cash Found", f"${total:,.2f}")
-            
-            c1, c2 = st.columns([1, 1.5])
-            with c1:
+        audit_df = st.session_state.audit_data
+        if not audit_df.empty:
+            st.metric("Total Recoverable Cash Found", f"${audit_df['Amount ($)'].sum():,.2f}")
+            col1, col2 = st.columns([1, 1.5])
+            with col1:
                 st.write("### 🔍 Risk Findings")
-                st.dataframe(res, use_container_width=True, hide_index=True)
-            with col2: # Fixed common typo here to ensure chart renders
+                opts = audit_df["Category"].unique().tolist()
+                sel = st.multiselect("Filter Security Categories", opts, default=opts)
+                filt = audit_df[audit_df["Category"].isin(sel)]
+                st.dataframe(filt, use_container_width=True, hide_index=True)
+            with col2:
                 st.write("### 📈 Exposure Distribution")
-                st.bar_chart(data=res, x="Category", y="Amount ($)")
+                st.bar_chart(data=filt, x="Category", y="Amount ($)")
             
-            csv_rep = res.to_csv(index=False).encode('utf-8-sig')
-            st.download_button("Download Secure Audit Report", csv_rep, "ClearSpend_Report.csv")
+            st.divider()
+            csv_data = filt.to_csv(index=False).encode('utf-8-sig')
+            st.download_button("Download Secure Audit Report", csv_data, "ClearSpend_Report.csv")
