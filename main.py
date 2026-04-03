@@ -155,19 +155,20 @@ if not st.session_state["logged_in"]:
     with tab_login:
         u = st.text_input("Username", key="l_user")
         p = st.text_input("Password", type="password", key="l_pass")
-        if st.button("Log In", use_container_width=True):
-            accounts = load_accounts()
-            if u in accounts and accounts[u]["pw"] == p:
-                # CLEAR PREVIOUS DATA UPON NEW LOGIN
-                st.session_state.messages = []
-                st.session_state.audit_data = None
-                
+       if st.button("Log In", use_container_width=True):
+            # THIS IS THE FIX: Refresh the account list from the file immediately
+            accounts = load_accounts() 
+            
+            if u_in in accounts and accounts[u_in]["pw"] == p_in:
                 st.session_state["logged_in"] = True
-                st.session_state["user_name"] = accounts[u]["name"]
-                st.session_state["org_name"] = accounts[u].get("org", "UIC")
+                st.session_state["user_name"] = accounts[u_in]["name"]
+                
+                # Optional: Add your balloons here if you want them
+                st.balloons()
+                
                 st.rerun()
             else:
-                st.error("❌ **Invalid Username or Password.**")
+                st.error("❌ Account not recognized or wrong password.")
                 
     with tab_signup:
         st.subheader("Register New Account")
