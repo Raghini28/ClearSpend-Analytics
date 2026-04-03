@@ -151,14 +151,13 @@ def forensic_bot(query):
 if not st.session_state["logged_in"]:
     st.title("🛡️ ClearSpend Security Portal")
     tab_login, tab_signup = st.tabs(["Login", "Create Account"])
-    
-with tab_login:
+    # 1. This is your Login Tab
+    with tab_login:
         u_in = st.text_input("Username", key="l_u")
         p_in = st.text_input("Password", type="password", key="l_p")
         
-        # This 'if' must line up perfectly with the 'u_in' above it
         if st.button("Log In", use_container_width=True):
-            accounts = load_accounts() # THE FIX: Added this line only
+            accounts = load_accounts() # The fix for your inactivity bug
             if u_in in accounts and accounts[u_in]["pw"] == p_in:
                 st.session_state["logged_in"] = True
                 st.session_state["user_name"] = accounts[u_in]["name"]
@@ -166,6 +165,11 @@ with tab_login:
                 st.rerun()
             else:
                 st.error("❌ Account not recognized or wrong password.")
+
+    # 2. LINE 170: This must start at the EXACT same column as 'with tab_login'
+    with tab_signup:
+        new_u = st.text_input("New Username")
+        # ... the rest of your signup code ...
                 
     with tab_signup:
         st.subheader("Register New Account")
