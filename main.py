@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import json
 import os
+import time
 
 # --- 1. PERSISTENT STORAGE SETUP ---
 DB_FILE = "users_db.json"
@@ -33,12 +34,20 @@ if not st.session_state["logged_in"]:
         u_in = st.text_input("Username", key="l_u")
         p_in = st.text_input("Password", type="password", key="l_p")
         if st.button("Log In", use_container_width=True):
-            # FORCE reload from JSON file to catch accounts created in previous runs
+            # FORCE reload from JSON file to find accounts created in previous sessions
             accounts = load_accounts()
             if u_in in accounts and accounts[u_in]["pw"] == p_in:
+                # Set State
                 st.session_state["logged_in"] = True
                 st.session_state["user_name"] = accounts[u_in]["name"]
                 st.session_state["org_name"] = accounts[u_in].get("org", "Organization")
+                
+                # The "Balloon Thing" & Success Message
+                st.balloons()
+                st.success(f"Welcome back, {st.session_state['user_name']}!")
+                
+                # Pause for 2 seconds so the balloons are visible
+                time.sleep(2)
                 st.rerun()
             else:
                 st.error("❌ Account not recognized or wrong password.")
@@ -58,13 +67,15 @@ if not st.session_state["logged_in"]:
 
 # --- 4. MAIN APP LOGIC (DASHBOARD) ---
 st.set_page_config(page_title="ClearSpend Analytics", layout="wide")
+
+# Sidebar
 st.sidebar.title(f"Welcome, {st.session_state['user_name']}")
 st.sidebar.info(f"Org: {st.session_state.get('org_name', 'UIC')}")
-
 if st.sidebar.button("Log Out"):
     st.session_state["logged_in"] = False
     st.rerun()
 
+# Dashboard Content
 st.title("Financial Data Viewer")
 uploaded_file = st.file_uploader("Upload Finance Data (CSV)", type=["csv"])
 
@@ -72,7 +83,6 @@ if uploaded_file:
     df = pd.read_csv(uploaded_file)
     st.write("### Data Preview", df)
     
-    # Simple Data Insights
     st.divider()
     st.subheader("Data Summary")
     st.write(f"Total Records: {len(df)}")
