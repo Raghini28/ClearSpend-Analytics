@@ -166,11 +166,7 @@ if not st.session_state["logged_in"]:
             else:
                 st.error("❌ Account not recognized or wrong password.")
 
-    # 2. LINE 170: This must start at the EXACT same column as 'with tab_login'
-    with tab_signup:
-        new_u = st.text_input("New Username")
-        # ... the rest of your signup code ...
-                
+    # 2. LINE 170: This must start at the EXACT same column as 'with tab_login'                
     with tab_signup:
         st.subheader("Register New Account")
         new_u = st.text_input("Choose Username", key="s_user")
