@@ -58,7 +58,7 @@ if "audit_data" not in st.session_state:
     st.session_state.audit_data = None
 
 # ----------------------------
-# 4) Forensic Engine (Audit-Grade Upgrades)
+# 4) Forensic Engine (Audit-Grade Logic)
 # ----------------------------
 def _norm(s: str) -> str:
     return "".join(ch.lower() for ch in str(s).strip() if ch.isalnum())
@@ -109,66 +109,39 @@ def build_audit(df_raw: pd.DataFrame):
 
     issues = []
     
-    # 1. Math Integrity (Actual Variance)
+    # 1. Math Integrity
     mm = df[abs(df["__L"] - df["__T"]) > 0.05]
     if not mm.empty:
-        issues.append({
-            "Category": "Calculation Variance", 
-            "Amount ($)": float(abs(mm["__T"] - mm["__L"]).sum()), 
-            "Priority": "🔴 Critical",
-            "Action": "Audit Line Item Math"
-        })
+        issues.append({"Category": "Calculation Variance", "Amount ($)": float(abs(mm["__T"] - mm["__L"]).sum()), "Priority": "🔴 Critical", "Action": "Audit Line Item Math"})
     
-    # 2. Duplicate Invoice (ID match OR Cross-Field Match)
-    # Check for identical Amount + Date + Vendor (Fuzzy Match)
+    # 2. Duplicate Invoice (ID + Fuzzy Match)
     fuzzy_dups = df[df.duplicated(subset=['__L', '__V', '__D'], keep=False)]
     if not fuzzy_dups.empty:
-        issues.append({
-            "Category": "Fuzzy Duplicate Match", 
-            "Amount ($)": float(fuzzy_dups['__L'].sum()), 
-            "Priority": "🔴 Critical", 
-            "Action": "Verify Original Invoice"
-        })
+        issues.append({"Category": "Fuzzy Duplicate Match", "Amount ($)": float(fuzzy_dups['__L'].sum()), "Priority": "🔴 Critical", "Action": "Verify Original Invoice"})
     
-    # 3. Price Creep (Historical Regression Trend)
+    # 3. Price Creep (Historical Regression)
     creep_total = 0
     for v, group in df.sort_values("__D").groupby("__V"):
         if len(group) > 2:
-            avg_historical = group["__U"].mean()
-            last_price = group["__U"].iloc[-1]
-            if last_price > avg_historical:
-                creep_total += (last_price - avg_historical) * len(group)
+            avg_hist = group["__U"].mean()
+            last_p = group["__U"].iloc[-1]
+            if last_p > avg_hist:
+                creep_total += (last_p - avg_hist) * len(group)
     if creep_total > 0:
-        issues.append({
-            "Category": "Trend Price Creep", 
-            "Amount ($)": float(creep_total), 
-            "Priority": "🟠 High",
-            "Action": "Renegotiate Rate Card"
-        })
+        issues.append({"Category": "Trend Price Creep", "Amount ($)": float(creep_total), "Priority": "🟠 High", "Action": "Renegotiate Rate Card"})
     
     # 4. Negative Leak (Refunds)
     negs = df[df["__L"] < 0]
     if not negs.empty:
-        issues.append({
-            "Category": "Negative Leak", 
-            "Amount ($)": float(negs["__L"].abs().sum()), 
-            "Priority": "🟣 High",
-            "Action": "Confirm Cash Recovery"
-        })
+        issues.append({"Category": "Negative Leak", "Amount ($)": float(negs["__L"].abs().sum()), "Priority": "🟣 High", "Action": "Confirm Cash Recovery"})
     
-    # 5. Pricing Inconsistency (Actual Overpayment Modeling)
+    # 5. Pricing Inconsistency (Contract Variance)
     if c_unit:
-        # Calculate loss based on highest vs lowest price paid to same vendor
-        df['best_price'] = df.groupby('__V')['__U'].transform('min')
-        df['loss'] = df['__U'] - df['best_price']
+        df['best_p'] = df.groupby('__V')['__U'].transform('min')
+        df['loss'] = df['__U'] - df['best_p']
         actual_loss = df[df['loss'] > 0]['loss'].sum()
         if actual_loss > 0:
-            issues.append({
-                "Category": "Contract Variance", 
-                "Amount ($)": float(actual_loss), 
-                "Priority": "🟡 Medium",
-                "Action": "Request Credit Note"
-            })
+            issues.append({"Category": "Contract Variance", "Amount ($)": float(actual_loss), "Priority": "🟡 Medium", "Action": "Request Credit Note"})
 
     return pd.DataFrame(issues)
 
@@ -179,56 +152,29 @@ def forensic_bot(query):
     query = query.lower()
     if "site" in query or "do" in query or "clearspend" in query:
         return "**ClearSpend Analytics is an audit-grade platform using statistical regression to identify hidden capital leaks and automate vendor credit recovery.**"
-    elif "math" in query or "integrity" in query:
-        return "**Variance Audit: We model the delta between itemized line data and final settlement totals to catch phantom charges.**"
-    elif "duplicate" in query:
-        return "**Cross-Field Matching: Our engine flags duplicates by correlating amount, date, and vendor patterns, bypassing ID-obfuscation.**"
-    elif "creep" in query:
-        return "**Regression Analysis: We track unit price trends against historical baselines to flag unauthorized inflationary creep.**"
-    elif "negative" in query or "leak" in query:
-        return "**Credit Recovery: We identify recorded refunds that lack settlement confirmation in the general ledger.**"
-    elif "inconsistency" in query:
-        return "**Contract Variance: We benchmark every purchase against your lowest historical rate to calculate actual overpayment.**"
-    return "**I am the ClearSpend AI Assistant. Ask me about Contract Variance, Regression Trends, or Fuzzy Matching!**"
+    return "**I am the ClearSpend AI Assistant. Ask me about Contract Variance or Duplicate Patterns!**"
 
 # ----------------------------
 # 6) UI Flow: Login & Signup
 # ----------------------------
 if not st.session_state["logged_in"]:
     st.title("🛡️ ClearSpend Security Portal")
-    tab_login, tab_signup = st.tabs(["Login", "Create Account"])
-    
-    with tab_login:
+    t1, t2 = st.tabs(["Login", "Create Account"])
+    with t1:
         u = st.text_input("Username", key="l_user")
         p = st.text_input("Password", type="password", key="l_pass")
         if st.button("Log In", use_container_width=True):
-            accounts = load_accounts()
-            if u in accounts and accounts[u]["pw"] == p:
-                st.session_state.messages = []
-                st.session_state.audit_data = None
-                st.session_state["logged_in"] = True
-                st.session_state["user_name"] = accounts[u]["name"]
-                st.session_state["org_name"] = accounts[u].get("org", "UIC")
+            accs = load_accounts()
+            if u in accs and accs[u]["pw"] == p:
+                st.session_state.update({"logged_in": True, "user_name": accs[u]["name"], "org_name": accs[u].get("org", "UIC")})
                 st.rerun()
-            else:
-                st.error("❌ **Invalid Username or Password.**")
-                
-    with tab_signup:
-        st.subheader("Register New Account")
-        new_u = st.text_input("Choose Username", key="s_user")
-        new_p = st.text_input("Choose Password", type="password", key="s_pass")
-        new_n = st.text_input("Full Name", key="s_name")
-        new_o = st.text_input("Organization", key="s_org")
+            else: st.error("❌ Invalid Credentials")
+    with t2:
+        nu, np, nn, no = st.text_input("Username", key="s_u"), st.text_input("Password", type="password", key="s_p"), st.text_input("Full Name"), st.text_input("Organization")
         if st.button("Create Account", use_container_width=True):
-            accounts = load_accounts()
-            if new_u in accounts:
-                st.error("⚠️ **Account already exists for this username.**")
-            elif new_u and new_p and new_n:
-                save_account(new_u, {"pw": new_p, "name": new_n, "org": new_o})
-                st.balloons()
-                st.success(f"**Account created for {new_n}! You can now login.**")
-            else:
-                st.warning("⚠️ **Please fill in all fields.**")
+            save_account(nu, {"pw": np, "name": nn, "org": no})
+            st.balloons()
+            st.success("✅ Account Created!")
 
 # ----------------------------
 # 7) UI Flow: Dashboard
@@ -237,33 +183,29 @@ else:
     with st.sidebar:
         st.markdown('<p class="brand-text">💎 ClearSpend</p>', unsafe_allow_html=True)
         st.info(f"👤 **{st.session_state['user_name']}** | 🏢 **{st.session_state['org_name']}**")
-        
-        st.subheader("🤖 AI Assistant")
-        with st.container():
-            for m in st.session_state.messages:
-                with st.chat_message(m["role"]): st.markdown(m["content"])
-            if pr := st.chat_input("Ask a forensic question..."):
-                st.session_state.messages.append({"role": "user", "content": pr})
-                res = forensic_bot(pr)
-                st.session_state.messages.append({"role": "assistant", "content": res})
-                st.rerun()
-
         if st.button("Log Out", use_container_width=True):
             st.session_state["logged_in"] = False
-            st.session_state.messages = []
-            st.session_state.audit_data = None
             st.rerun()
 
     st.title(f"📊 {st.session_state['org_name']} Recovery Dashboard")
-    f = st.file_uploader("Upload AP Ledger (CSV or XLSX)", type=["csv", "xlsx"])
+    f = st.file_uploader("Upload AP Ledger (CSV)", type=["csv"])
 
     if f:
-        df_raw = pd.read_csv(f) if f.name.endswith('.csv') else pd.read_excel(f)
+        df_raw = pd.read_csv(f)
         st.session_state.audit_data = build_audit(df_raw)
 
     if st.session_state.audit_data is not None:
-        audit_df = st.session_state.audit_data
-        if not audit_df.empty:
-            st.metric("Total Recoverable Cash Found", f"${audit_df['Amount ($)'].sum():,.2f}")
-            col1, col2 = st.columns([1, 1.5])
-            with col1:
+        res = st.session_state.audit_data
+        if not res.empty:
+            st.metric("Total Recoverable Cash Found", f"${res['Amount ($)'].sum():,.2f}")
+            c1, c2 = st.columns([1, 1.5])
+            with c1:
+                st.write("### 🔍 Risk Findings")
+                st.dataframe(res, use_container_width=True, hide_index=True)
+            with c2:
+                st.write("### 📈 Exposure Distribution")
+                st.bar_chart(data=res, x="Category", y="Amount ($)")
+            
+            st.divider()
+            csv_rep = res.to_csv(index=False).encode('utf-8-sig')
+            st.download_button("Download Secure Audit Report", csv_rep, "ClearSpend_Report.csv")
