@@ -161,7 +161,7 @@ if not st.session_state["logged_in"]:
             if u_in in accounts and accounts[u_in]["pw"] == p_in:
                 st.session_state["logged_in"] = True
                 st.session_state["user_name"] = accounts[u_in]["name"]
-                st.balloons()
+                st.session_state["org_name"] = accounts[u_in].get("org", "ClearSpend User")
                 st.rerun()
             else:
                 st.error("❌ Account not recognized or wrong password.")
