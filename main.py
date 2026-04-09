@@ -221,7 +221,7 @@ def _render_manufacturing_dashboard() -> None:
     with st.expander("Dataset explanation (manufacturing AP — use this framing in the app)", expanded=False):
         st.markdown(mfg_ap.DATASET_GUIDE_MD)
         st.caption(
-            "Reference file (≈500 rows, savings tuned ≈ $15k): "
+            "Reference file (≈500 rows, savings typically low five figures): "
             "`sample_data/manufacturing_ap_reference_ledger.csv` — regenerate with "
             "`python scripts/generate_manufacturing_reference_ledger.py`."
         )
@@ -235,7 +235,7 @@ def _render_manufacturing_dashboard() -> None:
     m1.metric(
         "Flagged exposure (review $)",
         f"${k.get('flagged_exposure_usd', 0):,.0f}",
-        help="Non-control findings: max ledger Total_Amount per line key (invoice or near-dup pair). Not cash recovery.",
+        help="Substantive rules: each invoice counted once at ledger Total_Amount (near-dup pairs de-duplicated). Not cash recovery.",
     )
     m2.metric(
         "Control issues ($ exposure)",
@@ -326,8 +326,8 @@ def _render_manufacturing_dashboard() -> None:
     with tab_tax:
         st.markdown("#### Tax variance")
         st.caption(
-            "Savings-eligible: absolute delta vs flat benchmark rate "
-            "(optional env `CLEARSPEND_EXPECTED_TAX_RATE`)."
+            "Savings-eligible: absolute delta vs dataset median implied tax rate unless "
+            "`CLEARSPEND_EXPECTED_TAX_RATE` is set."
         )
         tv = f.get("tax_variance")
         if tv is not None and not tv.empty:
@@ -345,8 +345,8 @@ def _render_manufacturing_dashboard() -> None:
     with tab_drift:
         pdv = f.get("price_drift")
         st.caption(
-            "Flag when pre-tax amount > peer median + 2×σ within Vendor_ID + Category "
-            "(min peer count from env `CLEARSPEND_PRICE_DRIFT_MIN_GROUP`, default 20). "
+            "Flag when pre-tax amount > peer median + 3×σ within Vendor_ID + Category "
+            "(min peer count from env `CLEARSPEND_PRICE_DRIFT_MIN_GROUP`, default 30). "
             "Recoverable = excess over median only (sourcing opportunity estimate)."
         )
         if pdv is not None and not pdv.empty:
@@ -632,7 +632,7 @@ else:
     with st.expander("Download sample stress-test CSV & backend LLM configuration", expanded=False):
         if MANUFACTURING_SAMPLE_LEDGER_PATH.is_file():
             st.download_button(
-                "Download manufacturing_ap_reference_ledger.csv (~500 rows, ≈$15k est. savings)",
+                "Download manufacturing_ap_reference_ledger.csv (~500 rows, reference est. savings in app)",
                 data=MANUFACTURING_SAMPLE_LEDGER_PATH.read_bytes(),
                 file_name="manufacturing_ap_reference_ledger.csv",
                 mime="text/csv",

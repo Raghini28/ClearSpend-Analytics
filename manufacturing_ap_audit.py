@@ -27,7 +27,7 @@ DATASET_GUIDE_MD = """### Dataset explanation (manufacturing AP)
 - The ledger is **mostly clean** and operationally realistic.
 - Only a **small** subset of invoices contain intentional inconsistencies.
 - Inconsistencies are **subtle** (not “everything is fraud”).
-- **Target recoverable savings** after resolving confirmed issues is about **$15,000** on the reference file; **flagged exposure** is often much larger and must be reported **separately** from savings.
+- **Target recoverable savings** on the reference file is on the order of **$12k–$16k** (rule defaults may shift slightly); **flagged exposure** is often larger and must be reported **separately** from savings.
 
 **Core columns (use this framing in the app)**
 | Column | What it means |
@@ -218,15 +218,15 @@ def _tag_finding(
 
 def math_integrity_check(norm: pd.DataFrame, tolerance: float | None = None) -> pd.DataFrame:
     """
-    Total_Amount should equal Invoice_Amount + Tax after cent rounding.
+    Total_Amount should equal (Invoice_Amount + Tax) × (1 + fee_rate) after cent rounding.
 
-    Uses **integer cents** for the comparison so binary float noise (e.g. 1080.0000000002)
-    never flags clean rows. Adds a **1¢ cushion** by default for ERP-style “round tax then
-    add” vs “round total” one-cent skews (override with CLEARSPEND_MATH_TOLERANCE).
+    Uses **integer cents** so float noise does not false-flag. Optional **embedded fee** when
+    the ERP bakes a surcharge into Total (e.g. processing fee as % of pre-fee subtotal).
 
     Env:
-    - CLEARSPEND_MATH_TOLERANCE — max abs delta in **dollars** (default 0.11 = $0.10 + 1¢).
-    - CLEARSPEND_MATH_EXTRA_PENNY — if "0", use exactly the dollar tolerance with no cushion.
+    - CLEARSPEND_MATH_TOLERANCE — max abs delta in **dollars** (after cent comparison logic).
+    - CLEARSPEND_MATH_EXTRA_PENNY — if not "0", widen tolerance by 1¢ when defaulting.
+    - CLEARSPEND_EMBEDDED_FEE_RATE — decimal rate applied to (Invoice+Tax), e.g. ``0.009363``.
     """
     default_tol = 0.10
     extra_penny = os.environ.get("CLEARSPEND_MATH_EXTRA_PENNY", "0").strip() != "0"
@@ -241,6 +241,14 @@ def math_integrity_check(norm: pd.DataFrame, tolerance: float | None = None) -> 
     elif extra_penny and tolerance <= 0.10:
         tolerance = 0.11
 
+    fee_rate = 0.0
+    env_fee = os.environ.get("CLEARSPEND_EMBEDDED_FEE_RATE")
+    if env_fee is not None:
+        try:
+            fee_rate = float(env_fee)
+        except (TypeError, ValueError):
+            fee_rate = 0.0
+
     tol_cents = max(1, int(round(float(tolerance) * 100)))
 
     out = norm.copy()
@@ -254,12 +262,12 @@ def math_integrity_check(norm: pd.DataFrame, tolerance: float | None = None) -> 
     v_inv = np.asarray(inv, dtype=np.float64)
     v_tax = np.asarray(tax, dtype=np.float64)
     v_tot = np.asarray(tot, dtype=np.float64)
-    inv_c = np.rint(v_inv * 100.0)
-    tax_c = np.rint(v_tax * 100.0)
+    v_expected = (v_inv + v_tax) * (1.0 + fee_rate)
+    exp_c = np.rint(v_expected * 100.0)
     tot_c = np.rint(v_tot * 100.0)
-    delta_c = tot_c - inv_c - tax_c
+    delta_c = tot_c - exp_c
 
-    out["Expected_Total"] = (inv + tax).round(2)
+    out["Expected_Total"] = np.round(v_expected, 2)
     math_delta_vals = np.where(valid_arr, np.round(delta_c / 100.0, 2), np.nan)
     out["Math_Delta"] = pd.Series(math_delta_vals, index=out.index, dtype=float)
 
@@ -271,11 +279,18 @@ def math_integrity_check(norm: pd.DataFrame, tolerance: float | None = None) -> 
     if flagged.empty:
         return flagged
     flagged["Recoverable_Amount"] = np.round(np.abs(delta_c[bad]) / 100.0, 2)
+    reason = (
+        "Total amount does not match (Invoice + Tax) × (1 + embedded fee) beyond tolerance "
+        "(cent-rounded check)."
+        if fee_rate != 0.0
+        else "Total amount does not match invoice amount plus tax beyond tolerance "
+        "(cent-rounded check)."
+    )
     tagged = _tag_finding(
         flagged,
         "Math Integrity Check",
         "Medium",
-        "Total amount does not match invoice amount plus tax beyond tolerance (cent-rounded check).",
+        reason,
         recoverable_col="Recoverable_Amount",
         finding_type=FINDING_REVIEW,
     )
@@ -377,24 +392,37 @@ def tax_variance_check(
     expected_rate: float | None = None,
     tolerance: float = 1.0,
 ) -> pd.DataFrame:
-    """Flat benchmark: Expected_Tax = Invoice_Amount * rate; flag if |Tax − Expected_Tax| > $1."""
+    """
+    Flags rows where Tax deviates from **Expected_Tax = Invoice_Amount × rate** beyond tolerance.
+
+    If ``expected_rate`` is not passed and ``CLEARSPEND_EXPECTED_TAX_RATE`` is unset, **rate** is
+    the dataset's **median implied** ``Tax / Invoice_Amount`` (positive invoices only). That avoids
+    false positives when the ledger consistently uses e.g. 8.07% vs a hardcoded 8%.
+    """
+    inv = pd.to_numeric(norm["Invoice_Amount"], errors="coerce")
+    tx = pd.to_numeric(norm["Tax"], errors="coerce")
+    valid_mask = inv.notna() & tx.notna() & (inv > 0)
+
+    rate: float | None = None
     if expected_rate is not None:
         rate = float(expected_rate)
     else:
-        rate = 0.08
         env_r = os.environ.get("CLEARSPEND_EXPECTED_TAX_RATE")
         if env_r is not None:
             try:
                 rate = float(env_r)
             except (TypeError, ValueError):
-                pass
+                rate = None
+    if rate is None:
+        implied = tx[valid_mask] / inv[valid_mask]
+        rate = float(implied.median()) if not implied.empty else 0.08
 
     out = norm.copy()
     inv = pd.to_numeric(out["Invoice_Amount"], errors="coerce")
     tx = pd.to_numeric(out["Tax"], errors="coerce")
     out["Expected_Tax"] = (inv * float(rate)).round(2)
     out["Tax_Delta"] = (tx - out["Expected_Tax"]).round(2)
-    valid = inv.notna() & tx.notna()
+    valid = inv.notna() & tx.notna() & (inv > 0)
     flagged = out[valid & (out["Tax_Delta"].abs() > tolerance)].copy()
     if flagged.empty:
         return flagged
@@ -403,7 +431,7 @@ def tax_variance_check(
         flagged,
         "Tax Variance",
         "Low",
-        f"Tax amount exceeds expected {rate:.0%} benchmark beyond ${tolerance:.2f} tolerance.",
+        f"Tax amount deviates from benchmark rate ({rate:.4%}) beyond ${tolerance:.2f} tolerance.",
         recoverable_col="Recoverable_Amount",
         finding_type=FINDING_RECOVERABLE,
     )
@@ -411,20 +439,20 @@ def tax_variance_check(
 
 def price_drift_check(
     norm: pd.DataFrame,
-    z_threshold: float = 2.0,
+    z_threshold: float = 3.0,
     min_group_size: int | None = None,
 ) -> pd.DataFrame:
     """
     Peer benchmark by Vendor_ID + Category (group median / std on **Invoice_Amount**).
 
     Recoverable_Amount = max(Invoice_Amount − Peer_Median, 0) only — **never** full invoice.
-    Flag when Invoice_Amount > Peer_Median + z_threshold * Peer_STD, group large enough, std > 0.
+    Defaults: **z_threshold = 3.0**, **min_group_size = 30** (env ``CLEARSPEND_PRICE_DRIFT_MIN_GROUP``).
     """
     if min_group_size is None:
         try:
-            min_group_size = int(os.environ.get("CLEARSPEND_PRICE_DRIFT_MIN_GROUP", "20"))
+            min_group_size = int(os.environ.get("CLEARSPEND_PRICE_DRIFT_MIN_GROUP", "30"))
         except ValueError:
-            min_group_size = 20
+            min_group_size = 30
     out = norm.copy()
     grp = out.groupby(["Vendor_ID", "Category"], sort=False)["Invoice_Amount"]
     out["Peer_Count"] = grp.transform("count")
@@ -865,7 +893,7 @@ def run_manufacturing_ap_audit(
         "exact_duplicate": exact_duplicate_check(norm),
         "near_duplicate": near_duplicate_check(norm),
         "tax_variance": tax_variance_check(norm, expected_rate=expected_tax_rate),
-        "price_drift": price_drift_check(norm, z_threshold=2.0),
+        "price_drift": price_drift_check(norm),
         "currency": currency_consistency_check(norm),
         "weekend": weekend_posting_check(norm),
         "threshold": threshold_check(norm),
@@ -968,7 +996,7 @@ def build_executive_summary_md(result: ManufacturingAuditResult) -> str:
         "### Estimated savings (cash-like, conservative)",
         f"- **~${k.get('estimated_savings_usd', 0):,.2f}** — **only** from:",
         "  - **Exact duplicate payments** (extra rows after the first in each vendor/date/amount cluster),",
-        "  - **Tax variance** (absolute delta vs flat 8% benchmark on pre-tax amount),",
+        "  - **Tax variance** (absolute delta vs dataset median implied rate or ``CLEARSPEND_EXPECTED_TAX_RATE``),",
         "  - **Price drift** — **estimated sourcing opportunity** (pre-tax excess above peer **median** "
         "by vendor + category, using within-group dispersion; recoverable is **delta only**, never full invoice).",
         "- If one invoice hits multiple savings rules, we take the **largest single recoverable** for that invoice, then sum (no double counting).",
@@ -986,10 +1014,11 @@ def build_executive_summary_md(result: ManufacturingAuditResult) -> str:
         f"- **Exact-duplicate cluster rows:** {k.get('confirmed_duplicate_rows', 0)}",
         "",
         "### Math integrity",
-        "- **Cent-rounded** check: `Total_Amount` vs `Invoice_Amount + Tax` (default **$0.10**; "
-        "`CLEARSPEND_MATH_TOLERANCE`, optional 1¢ cushion via `CLEARSPEND_MATH_EXTRA_PENNY=1`). "
+        "- **Cent-rounded** check: `Total_Amount` vs `(Invoice_Amount + Tax) × (1 + fee)` (default fee **0**; "
+        "set `CLEARSPEND_EMBEDDED_FEE_RATE` if ERP embeds a surcharge). Tolerance: **$0.10** baseline; "
+        "`CLEARSPEND_MATH_TOLERANCE`, optional 1¢ cushion via `CLEARSPEND_MATH_EXTRA_PENNY=1`. "
         "**Review Required** — not included in estimated savings. If **mass-flag warning** appears, "
-        "the ledger definition likely does not match this equation.",
+        "adjust fee/tolerance or column definitions.",
         "",
         "_Numbers are computed in Python; use rule tabs for detail._",
     ]

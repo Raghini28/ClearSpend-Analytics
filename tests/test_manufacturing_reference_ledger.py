@@ -16,7 +16,8 @@ def test_reference_ledger_schema_and_savings_band():
     assert mfg.has_manufacturing_schema(df)
     assert len(df) >= 495
     r = mfg.run_manufacturing_ap_audit(df)
-    assert 13_500 < r.estimated_savings_usd < 16_500
+    # Band allows stricter price drift (z=3, min group 30) and median-implied tax baseline.
+    assert 11_500 < r.estimated_savings_usd < 16_500
     assert r.kpis["confirmed_duplicate_rows"] >= 2
 
 

@@ -91,15 +91,15 @@ def test_math_exposure_uses_invoice_total_for_review_scope():
 
 def test_price_drift_exposure_is_delta_only():
     base_rows = []
-    for i in range(24):
+    for i in range(35):
         base_rows.append(
             {
                 "Invoice_ID": f"P{i:02d}",
                 "Vendor_Name": "PeerCo",
                 "Vendor_ID": "VP",
                 "Category": "Raw Materials",
-                "Invoice_Date": f"2024-02-{(i % 25) + 1:02d}",
-                "Payment_Date": f"2024-03-{(i % 25) + 1:02d}",
+                "Invoice_Date": f"2024-02-{(i % 28) + 1:02d}",
+                "Payment_Date": f"2024-03-{(i % 28) + 1:02d}",
                 "Currency": "USD",
                 "Invoice_Amount": 1000.0 + i * 2.0,
                 "Tax": 80.0 + i * 0.16,
