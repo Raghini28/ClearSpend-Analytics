@@ -381,6 +381,8 @@ def _records(df: pd.DataFrame, max_rows: int = 300) -> list[dict]:
     if df is None or df.empty:
         return []
     view = df.head(max_rows).copy()
+    # Stable row identity so we can dedupe $ exposure across checks (same line, many flags).
+    view.insert(0, "__ROW_IDX", view.index.to_numpy())
     for c in view.columns:
         if pd.api.types.is_datetime64_any_dtype(view[c]):
             view[c] = view[c].astype(str)
@@ -1335,6 +1337,57 @@ def summary_table_from_accumulated(ctx: dict[str, Any]) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+def unique_flagged_line_exposure_from_accumulated(
+    acc: dict[str, Any],
+) -> tuple[float, int]:
+    """
+    Sum |__L| once per flagged row across all tools (see deduplicated_flagged_line_exposure).
+    """
+    by_key: dict[tuple[Any, ...], float] = {}
+    for _tool, payload in acc.items():
+        if not isinstance(payload, dict) or payload.get("error"):
+            continue
+        for row in payload.get("flagged_rows") or []:
+            if not isinstance(row, dict):
+                continue
+            key_raw = row.get("__ROW_IDX")
+            if key_raw is None and "__L" in row:
+                key = (
+                    "fp",
+                    str(row.get("__ID", "")),
+                    str(row.get("__V", "")),
+                    round(float(row.get("__L") or 0.0), 6),
+                    str(row.get("__D", "")),
+                )
+            elif key_raw is not None:
+                key = ("idx", key_raw)
+            else:
+                continue
+            try:
+                amt = float(row.get("__L"))
+            except (TypeError, ValueError):
+                continue
+            prev = by_key.get(key)
+            # Same key should have same __L; keep max abs in case of tiny float noise
+            v = abs(amt)
+            if prev is None or v > prev:
+                by_key[key] = v
+    total = float(sum(by_key.values()))
+    return total, len(by_key)
+
+
+def deduplicated_flagged_line_exposure(ctx: dict[str, Any]) -> tuple[float, int]:
+    """
+    Dollar exposure counted once per source ledger row.
+
+    The summary table sums per-category exposure_usd, which **double-counts** when the same
+    line is flagged by multiple checks. This uses __ROW_IDX on flagged_rows (or a fallback
+    fingerprint) to include each line's amount at most once.
+    """
+    ensure_all_checks(ctx)
+    return unique_flagged_line_exposure_from_accumulated(ctx.get("accumulated") or {})
 
 
 def format_accumulated_for_llm(ctx: dict[str, Any], max_chars: int = 6000) -> str:

@@ -10,7 +10,7 @@ from typing import TypeVar
 T = TypeVar("T")
 
 
-def call_with_retry(fn: Callable[[], T], *, retries: int = 5, base_delay: float = 0.6) -> T:
+def call_with_retry(fn: Callable[[], T], *, retries: int = 8, base_delay: float = 0.6) -> T:
     last: Exception | None = None
     for attempt in range(retries):
         try:
@@ -18,10 +18,10 @@ def call_with_retry(fn: Callable[[], T], *, retries: int = 5, base_delay: float 
         except Exception as e:
             last = e
             msg = str(e).lower()
-            retryable = any(
+            hard_rl = "429" in msg or "rate_limit" in msg
+            retryable = hard_rl or any(
                 x in msg
                 for x in (
-                    "429",
                     "rate",
                     "too many requests",
                     "overloaded",
@@ -34,6 +34,11 @@ def call_with_retry(fn: Callable[[], T], *, retries: int = 5, base_delay: float 
             )
             if not retryable or attempt == retries - 1:
                 raise
-            time.sleep(base_delay * (2**attempt) + random.random() * 0.15)
+            # Org TPM limits: wait longer so the next minute/sliding window clears.
+            if hard_rl:
+                wait = min(75.0, 12.0 * (2**attempt) + random.random() * 5.0)
+            else:
+                wait = base_delay * (2**attempt) + random.random() * 0.15
+            time.sleep(wait)
     assert last is not None
     raise last

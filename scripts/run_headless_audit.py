@@ -14,7 +14,12 @@ if str(ROOT) not in sys.path:
 
 import pandas as pd
 
-from audit_engine import ensure_all_checks, prepare_ledger, summary_table_from_accumulated
+from audit_engine import (
+    deduplicated_flagged_line_exposure,
+    ensure_all_checks,
+    prepare_ledger,
+    summary_table_from_accumulated,
+)
 
 
 def main() -> None:
@@ -44,11 +49,17 @@ def main() -> None:
         sys.exit(1)
     ensure_all_checks(ctx)
     table = summary_table_from_accumulated(ctx)
-    total = float(table["Amount ($)"].sum()) if table is not None and not table.empty else 0.0
+    category_sum = (
+        float(table["Amount ($)"].sum()) if table is not None and not table.empty else 0.0
+    )
+    unique_exp, unique_n = deduplicated_flagged_line_exposure(ctx)
     out = {
         "file": str(path),
         "row_count": len(ctx["df"]),
-        "total_exposure_usd": total,
+        "unique_flagged_line_exposure_usd": unique_exp,
+        "unique_flagged_line_count": unique_n,
+        "category_exposure_sum_usd": category_sum,
+        "total_exposure_usd": unique_exp,
         "categories": json.loads(table.to_json(orient="records")) if table is not None and not table.empty else [],
     }
     text = json.dumps(out, indent=2)

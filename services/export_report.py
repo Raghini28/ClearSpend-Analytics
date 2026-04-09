@@ -17,32 +17,60 @@ except ImportError:
     FPDF = None  # type: ignore
 
 
+def _pdf_core_font_safe(text: str) -> str:
+    """Helvetica only supports latin-1; strip/replace emoji and other Unicode."""
+    if not text:
+        return ""
+    return (text or "").encode("latin-1", errors="replace").decode("latin-1")
+
+
+def clean_pdf_text(text: str) -> str:
+    """Normalize text for PDF core fonts (alias for Latin-1-safe output)."""
+    return _pdf_core_font_safe(text)
+
+
+def safe_text(text: str, limit: int = 2000) -> str:
+    text = clean_pdf_text(text)
+    return text[:limit]
+
+
 def build_pdf_bytes(title: str, summary_md: str, summary_df: pd.DataFrame | None) -> bytes | None:
     if FPDF is None:
         return None
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
+    text_w = float(getattr(pdf, "epw", pdf.w - pdf.r_margin - pdf.l_margin))
+
+    def _mc(line: str, h: float) -> None:
+        pdf.set_x(pdf.l_margin)
+        pdf.multi_cell(text_w, h, line)
+
     pdf.set_font("Helvetica", "B", 14)
-    pdf.multi_cell(0, 8, title)
-    pdf.ln(4)
+    _mc(_pdf_core_font_safe(title), 8)
+    pdf.ln(2)
     pdf.set_font("Helvetica", "", 10)
     if summary_df is not None and not summary_df.empty:
-        pdf.multi_cell(0, 6, "Summary (CSV-style lines)")
-        pdf.ln(2)
-        hdr = " | ".join(str(c) for c in summary_df.columns)
+        _mc("Summary (CSV-style lines)", 6)
+        pdf.ln(1)
+        hdr = " | ".join(_pdf_core_font_safe(str(c)) for c in summary_df.columns)
         pdf.set_font("Helvetica", "B", 9)
-        pdf.multi_cell(0, 5, hdr[:2000])
+        _mc(_pdf_core_font_safe(hdr[:2000]), 5)
         pdf.set_font("Helvetica", "", 8)
         for _, r in summary_df.head(60).iterrows():
-            line = " | ".join(str(x)[:48] for x in r.tolist())
-            pdf.multi_cell(0, 5, line[:2000])
-    pdf.ln(4)
-    pdf.set_font("Helvetica", "", 9)
-    body = (summary_md or "No narrative.")[:12000]
-    for para in body.split("\n\n"):
-        pdf.multi_cell(0, 5, para.replace("\n", " ")[:4000])
+            line = " | ".join(
+                _pdf_core_font_safe(str(x)[:48]) for x in r.tolist()
+            )
+            _mc(_pdf_core_font_safe(line[:2000]), 5)
         pdf.ln(2)
+    pdf.set_font("Helvetica", "", 9)
+    pdf.multi_cell(text_w, 5, "Narrative (line by line):")
+    pdf.ln(1)
+    for line in (summary_md or "No narrative.").splitlines():
+        if not line.strip():
+            pdf.ln(2)
+            continue
+        _mc(safe_text(line, 2000), 5)
     out = pdf.output(dest="S")
     if isinstance(out, str):
         return out.encode("latin-1", errors="replace")

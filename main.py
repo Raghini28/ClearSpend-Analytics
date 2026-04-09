@@ -10,6 +10,7 @@ import streamlit as st
 from audit_engine import (
     DRILLDOWN_TOOL_ORDER,
     dataframe_from_tool_result,
+    deduplicated_flagged_line_exposure,
     ensure_all_checks,
     format_accumulated_for_llm,
     prepare_ledger,
@@ -539,12 +540,23 @@ Users only choose **OpenAI vs Anthropic** in the sidebar; the app picks up the m
                 elif df is not None and len(df) > 0:
                     ensure_all_checks(ctx)
                     audit_df = summary_table_from_accumulated(ctx)
-                    total_exp = 0.0
+                    unique_exp, unique_n = deduplicated_flagged_line_exposure(ctx)
+                    total_exp = unique_exp
+                    category_sum = (
+                        float(audit_df["Amount ($)"].sum())
+                        if audit_df is not None and not audit_df.empty
+                        else 0.0
+                    )
                     if audit_df is not None and not audit_df.empty:
-                        total_exp = float(audit_df["Amount ($)"].sum())
                         st.metric(
-                            "Total flagged exposure (Python checks)",
+                            "Unique flagged line exposure (best estimate)",
                             f"${total_exp:,.2f}",
+                            help="Each ledger line is counted once even if multiple checks flag it. "
+                            "Category totals below can exceed this when summed.",
+                        )
+                        st.caption(
+                            f"**{unique_n}** distinct flagged lines · Category exposure sum "
+                            f"(can double-count): **${category_sum:,.2f}**"
                         )
                     else:
                         st.success(

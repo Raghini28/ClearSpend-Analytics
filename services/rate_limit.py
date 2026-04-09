@@ -8,7 +8,7 @@ from threading import Lock
 
 _lock = Lock()
 _last_ts: float = 0.0
-_MIN_INTERVAL = float(os.environ.get("LLM_MIN_INTERVAL_SECONDS", "0.35"))
+_MIN_INTERVAL = float(os.environ.get("LLM_MIN_INTERVAL_SECONDS", "1.25"))
 
 
 def throttle_llm() -> None:

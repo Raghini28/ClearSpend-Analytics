@@ -16,6 +16,9 @@ from services.rate_limit import throttle_llm
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
 
+# Cap tool JSON sent back to the model (large payloads blow past org tokens-per-minute limits).
+TOOL_JSON_MAX = int(os.environ.get("FORENSIC_TOOL_JSON_MAX", "45000"))
+
 SCHEMA_INFERENCE_PROMPT = """You map AP / invoice / ledger spreadsheets to a forensic audit schema.
 
 You receive JSON with column names, pandas dtypes, and sample rows.
@@ -390,7 +393,7 @@ def _agent_openai(ctx: dict, api_key: str, max_turns: int) -> dict[str, Any]:
                     {
                         "role": "tool",
                         "tool_call_id": tc.id,
-                        "content": json.dumps(result, default=str)[:120000],
+                        "content": json.dumps(result, default=str)[:TOOL_JSON_MAX],
                     }
                 )
             continue
@@ -423,7 +426,7 @@ def _agent_anthropic(ctx: dict, api_key: str, max_turns: int) -> dict[str, Any]:
             message = call_with_retry(
                 lambda: client.messages.create(
                     model=ANTHROPIC_MODEL,
-                    max_tokens=8192,
+                    max_tokens=4096,
                     system=SYSTEM_PROMPT,
                     tools=tools,
                     messages=messages,
@@ -453,7 +456,7 @@ def _agent_anthropic(ctx: dict, api_key: str, max_turns: int) -> dict[str, Any]:
                     {
                         "type": "tool_result",
                         "tool_use_id": b.id,
-                        "content": json.dumps(payload, default=str)[:120000],
+                        "content": json.dumps(payload, default=str)[:TOOL_JSON_MAX],
                     }
                 )
             messages.append({"role": "user", "content": tool_results})
@@ -551,7 +554,7 @@ def _chat_openai(
                     {
                         "role": "tool",
                         "tool_call_id": tc.id,
-                        "content": json.dumps(result, default=str)[:120000],
+                        "content": json.dumps(result, default=str)[:TOOL_JSON_MAX],
                     }
                 )
             continue
@@ -581,7 +584,7 @@ def _chat_anthropic(
             message = call_with_retry(
                 lambda: client.messages.create(
                     model=ANTHROPIC_MODEL,
-                    max_tokens=4096,
+                    max_tokens=2048,
                     system=system_text,
                     tools=tools,
                     messages=messages,
@@ -609,7 +612,7 @@ def _chat_anthropic(
                     {
                         "type": "tool_result",
                         "tool_use_id": b.id,
-                        "content": json.dumps(payload, default=str)[:120000],
+                        "content": json.dumps(payload, default=str)[:TOOL_JSON_MAX],
                     }
                 )
             messages.append({"role": "user", "content": tool_results})
