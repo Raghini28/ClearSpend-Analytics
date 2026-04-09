@@ -1,7 +1,17 @@
-import streamlit as st
-import pandas as pd
 import json
 import os
+
+import pandas as pd
+import streamlit as st
+
+from audit_engine import (
+    dataframe_from_tool_result,
+    ensure_all_checks,
+    format_accumulated_for_llm,
+    prepare_ledger,
+    summary_table_from_accumulated,
+)
+from forensic_agent import infer_ledger_mapping, run_chat_turn, run_forensic_agent
 
 # ----------------------------
 # 1) Page Configuration
@@ -54,119 +64,50 @@ if "logged_in" not in st.session_state:
     st.session_state["logged_in"] = False
 if "messages" not in st.session_state:
     st.session_state.messages = []
-if "audit_data" not in st.session_state:
-    st.session_state.audit_data = None
+if "forensic_ctx" not in st.session_state:
+    st.session_state.forensic_ctx = None
+if "agent_report" not in st.session_state:
+    st.session_state.agent_report = ""
+if "agent_error" not in st.session_state:
+    st.session_state.agent_error = None
+if "audit_ready" not in st.session_state:
+    st.session_state.audit_ready = False
+if "forensic_infer_note" not in st.session_state:
+    st.session_state.forensic_infer_note = None
 
-# ----------------------------
-# 4) Forensic Engine (Enhanced Logic)
-# ----------------------------
-def _norm(s: str) -> str:
-    return "".join(ch.lower() for ch in str(s).strip() if ch.isalnum())
+_DEFAULT_KEY_HINT = "Use sidebar field or env OPENAI_API_KEY / ANTHROPIC_API_KEY."
 
-def find_col(df: pd.DataFrame, candidates: list[str]):
-    # 1. Exact Match Strategy
-    norm_map = {_norm(c): c for c in df.columns}
-    for cand in candidates:
-        if _norm(cand) in norm_map: return norm_map[_norm(cand)]
-    
-    # 2. Heuristic Backup: Look for ID/Key keywords (Fixes "Giving Me Nothing")
-    for col in df.columns:
-        c_low = col.lower()
-        if any(w in c_low for w in ["id", "key", "ref", "num"]): return col
-    return None
 
-def find_amt_col(df: pd.DataFrame, candidates: list[str]):
-    # 1. Exact Match Strategy
-    norm_map = {_norm(c): c for c in df.columns}
-    for cand in candidates:
-        if _norm(cand) in norm_map: return norm_map[_norm(cand)]
-    
-    # 2. Heuristic Backup: Find the most significant numeric column
-    nums = df.select_dtypes(include=['number']).columns
-    if not nums.empty: return df[nums].mean().idxmax()
-    return None
+def _resolve_api_key(provider: str, sidebar_key: str) -> str:
+    s = (sidebar_key or "").strip()
+    if s:
+        return s
+    if provider == "openai":
+        v = os.environ.get("OPENAI_API_KEY", "")
+        if v:
+            return v
+        try:
+            return str(st.secrets.get("OPENAI_API_KEY", "") or "")
+        except Exception:
+            return ""
+    if provider == "anthropic":
+        v = os.environ.get("ANTHROPIC_API_KEY", "")
+        if v:
+            return v
+        try:
+            return str(st.secrets.get("ANTHROPIC_API_KEY", "") or "")
+        except Exception:
+            return ""
+    return ""
 
-def build_audit(df_raw: pd.DataFrame):
-    if df_raw.empty: return pd.DataFrame()
-    df = df_raw.copy()
-    for col in df.columns:
-        if df[col].dtype == 'object':
-            df[col] = df[col].astype(str).str.replace(r'[$,]', '', regex=True)
 
-    # UPDATED MAPPING: Now detects Snowflake (BOOKING_VALUE_USD) and backup keywords
-    c_amt = find_amt_col(df, ["BOOKING_VALUE_USD", "AMOUNT_USD", "Line_Amount", "Amount"])
-    c_tot = find_col(df, ["NET_CASH_IMPACT_USD", "Invoice_Total", "Total"])
-    c_id = find_col(df, ["TRANSACTION_ID", "BOOKING_KEY", "Invoice_ID", "InvoiceID"])
-    c_unit = find_col(df, ["FX_RATE_TO_USD", "Unit_Price", "Price"])
-    c_ven = find_col(df, ["SUPPLIER_KEY", "Vendor_Name", "Vendor"])
-    c_date = find_col(df, ["TRANSACTION_TS", "Invoice_Date", "Date"])
-
-    # If even fallback fails, create a row-index ID so audit can run
-    if not c_id:
-        df["__ID"] = range(len(df))
-        c_id = "__ID"
-
-    if not c_amt: return pd.DataFrame()
-
-    df["__L"] = pd.to_numeric(df[c_amt], errors='coerce').fillna(0)
-    df["__T"] = pd.to_numeric(df[c_tot], errors='coerce').fillna(0) if c_tot else df["__L"]
-    df["__U"] = pd.to_numeric(df[c_unit], errors='coerce').fillna(0) if c_unit else 0
-    df["__ID"] = df[c_id].astype(str)
-    df["__V"] = df[c_ven].astype(str) if c_ven else "N/A"
-    df["__D"] = pd.to_datetime(df[c_date], errors='coerce')
-
-    issues = []
-    
-    # 1. Math Integrity
-    mm = df[abs(df["__L"] - df["__T"]) > 0.05]
-    if not mm.empty:
-        issues.append({"Category": "Math Integrity Check", "Amount ($)": float(abs(mm["__T"] - mm["__L"]).sum()), "Priority": "🔴 Critical"})
-    
-    # 2. Duplicate Invoice
-    dup_ids = df["__ID"][df["__ID"].duplicated(keep=False)]
-    if not dup_ids.empty and (df["__ID"] != "N/A").any():
-        issues.append({"Category": "Duplicate Invoice", "Amount ($)": float(df[df["__ID"].isin(dup_ids.unique())]["__L"].sum()), "Priority": "🔴 Critical"})
-    
-    # 3. Price Creep
-    creep_amt = 0
-    for v, group in df.sort_values("__D").groupby("__V"):
-        if len(group) > 1:
-            diff = group["__U"].iloc[-1] - group["__U"].iloc[0]
-            if diff > 0: creep_amt += diff * len(group)
-    if creep_amt > 0:
-        issues.append({"Category": "Price Creep", "Amount ($)": float(creep_amt), "Priority": "🟠 High"})
-    
-    # 4. Negative Leak (Refunds)
-    negs = df[df["__L"] < 0]
-    if not negs.empty:
-        issues.append({"Category": "Negative Leak", "Amount ($)": float(negs["__L"].abs().sum()), "Priority": "🟣 High"})
-    
-    # 5. Pricing Inconsistency
-    if c_unit:
-        inc_count = (df.groupby("__V")["__U"].nunique() > 1).sum()
-        if inc_count > 0:
-            issues.append({"Category": "Pricing Inconsistency", "Amount ($)": float(inc_count * 500), "Priority": "🟡 Medium"})
-
-    return pd.DataFrame(issues)
-
-# ----------------------------
-# 5) Chatbot Logic
-# ----------------------------
-def forensic_bot(query):
-    query = query.lower()
-    if "site" in query or "do" in query or "clearspend" in query:
-        return "**ClearSpend Analytics is a high-level forensic audit platform designed to identify hidden financial leaks, recover lost capital, and ensure 100% vendor compliance.**"
-    elif "math" in query or "integrity" in query:
-        return "**Math Integrity Check: This functions as a Digital Receipt Validator. It cross-references itemized Line Amounts with the final Invoice Total to catch shadow fees.**"
-    elif "duplicate" in query:
-        return "**Duplicate Invoice: This validation scans for identical Invoice IDs across the entire dataset to prevent paying the same obligation twice.**"
-    elif "creep" in query:
-        return "**Price Creep: This monitors unit pricing trends over time to flag unauthorized price increases.**"
-    elif "negative" in query or "leak" in query:
-        return "**Negative Leak: This identifies credits and negative entries that have never been successfully recovered.**"
-    elif "inconsistency" in query:
-        return "**Pricing Inconsistency: This detects when a single vendor charges varying rates for the same SKU across departments.**"
-    return "**I am the ClearSpend AI Assistant. Ask me about Math Integrity, Price Creep, or Duplicates!**"
+DRILLDOWN_TOOLS = [
+    ("check_math_integrity", "Math Integrity Check"),
+    ("find_duplicate_invoices", "Duplicate Invoice"),
+    ("detect_price_creep", "Price Creep"),
+    ("find_negative_leaks", "Negative Leak"),
+    ("check_pricing_inconsistency", "Pricing Inconsistency"),
+]
 
 # ----------------------------
 # 6) UI Flow: Login & Signup
@@ -182,7 +123,11 @@ if not st.session_state["logged_in"]:
             accounts = load_accounts()
             if u in accounts and accounts[u]["pw"] == p:
                 st.session_state.messages = []
-                st.session_state.audit_data = None
+                st.session_state.forensic_ctx = None
+                st.session_state.agent_report = ""
+                st.session_state.agent_error = None
+                st.session_state.audit_ready = False
+                st.session_state.forensic_infer_note = None
                 st.session_state["logged_in"] = True
                 st.session_state["user_name"] = accounts[u]["name"]
                 st.session_state["org_name"] = accounts[u].get("org", "UIC")
@@ -214,45 +159,271 @@ else:
     with st.sidebar:
         st.markdown('<p class="brand-text">💎 ClearSpend</p>', unsafe_allow_html=True)
         st.info(f"👤 **{st.session_state['user_name']}** | 🏢 **{st.session_state['org_name']}**")
-        
+
+        st.subheader("AI configuration")
+        provider = st.selectbox(
+            "Model provider",
+            options=["anthropic", "openai"],
+            format_func=lambda x: "Anthropic (Claude Haiku 4.5)" if x == "anthropic" else "OpenAI (gpt-4o)",
+            key="ai_provider",
+        )
+        api_field = st.text_input(
+            "API key",
+            type="password",
+            key="ai_api_key",
+            help="Session-only unless you set OPENAI_API_KEY / ANTHROPIC_API_KEY or Streamlit secrets.",
+        )
+        resolved = _resolve_api_key(provider, api_field)
+        if resolved and not api_field:
+            st.caption("Using API key from environment or Streamlit secrets.")
+
+        ctx = st.session_state.forensic_ctx
+        ledger_ok = bool(
+            isinstance(ctx, dict)
+            and ctx.get("source_df") is not None
+            and len(ctx["source_df"]) > 0
+        )
+
         st.subheader("🤖 AI Assistant")
-        with st.container():
-            for m in st.session_state.messages:
-                with st.chat_message(m["role"]): st.markdown(m["content"])
-            if pr := st.chat_input("Ask a forensic question..."):
-                st.session_state.messages.append({"role": "user", "content": pr})
-                res = forensic_bot(pr)
-                st.session_state.messages.append({"role": "assistant", "content": res})
-                st.rerun()
+        if not ledger_ok:
+            st.caption("Upload a valid ledger (main area) so tools can read your dataset.")
+
+        for m in st.session_state.messages:
+            with st.chat_message(m["role"]):
+                st.markdown(m["content"])
+        if pr := st.chat_input("Ask a follow-up forensic question..."):
+            st.session_state.messages.append({"role": "user", "content": pr})
+            if not ledger_ok:
+                reply = "Upload a ledger file first. If amounts are not mapped yet, run an AI audit or ask me to remap columns."
+            elif not resolved:
+                reply = "Add an API key (or set env / secrets) to use the assistant."
+            else:
+                with st.spinner("Agent thinking..."):
+                    reply = run_chat_turn(ctx, provider, resolved, st.session_state.messages)
+            st.session_state.messages.append({"role": "assistant", "content": reply})
+            st.rerun()
 
         if st.button("Log Out", use_container_width=True):
             st.session_state["logged_in"] = False
             st.session_state.messages = []
-            st.session_state.audit_data = None
+            st.session_state.forensic_ctx = None
+            st.session_state.agent_report = ""
+            st.session_state.agent_error = None
+            st.session_state.audit_ready = False
+            st.session_state.forensic_infer_note = None
             st.rerun()
 
     st.title(f"📊 {st.session_state['org_name']} Recovery Dashboard")
+    st.markdown(
+        "Upload an AP ledger, then **Run AI forensic audit**. A model first **infers column roles** odd layouts, "
+        "then **Python performs all arithmetic** on those columns; the agent interprets results and can **remap** if needed."
+    )
+
     f = st.file_uploader("Upload AP Ledger (CSV or XLSX)", type=["csv", "xlsx"])
-
     if f:
-        df_raw = pd.read_csv(f) if f.name.endswith('.csv') else pd.read_excel(f)
-        st.session_state.audit_data = build_audit(df_raw)
+        df_raw = pd.read_csv(f) if f.name.endswith(".csv") else pd.read_excel(f)
+        st.session_state.forensic_ctx = prepare_ledger(df_raw)
+        st.session_state.upload_name = f.name
+        st.session_state.agent_report = ""
+        st.session_state.agent_error = None
+        st.session_state.audit_ready = False
+        st.session_state.forensic_infer_note = None
 
-    if st.session_state.audit_data is not None:
-        audit_df = st.session_state.audit_data
-        if not audit_df.empty:
-            st.metric("Total Recoverable Cash Found", f"${audit_df['Amount ($)'].sum():,.2f}")
-            col1, col2 = st.columns([1, 1.5])
-            with col1:
-                st.write("### 🔍 Risk Findings")
-                opts = audit_df["Category"].unique().tolist()
-                sel = st.multiselect("Filter Security Categories", opts, default=opts)
-                filt = audit_df[audit_df["Category"].isin(sel)]
-                st.dataframe(filt, use_container_width=True, hide_index=True)
-            with col2:
-                st.write("### 📈 Exposure Distribution")
-                st.bar_chart(data=filt, x="Category", y="Amount ($)")
-            
-            st.divider()
-            csv_data = filt.to_csv(index=False).encode('utf-8-sig')
-            st.download_button("Download Secure Audit Report", csv_data, "ClearSpend_Report.csv")
+    ctx = st.session_state.forensic_ctx
+    if ctx is None:
+        st.info("Upload a CSV or XLSX file to begin.")
+    else:
+        if ctx.get("error") == "missing_amount_column":
+            st.warning(
+                "Heuristics did not find a standard amount column. **Run AI forensic audit** — the model will "
+                "infer column roles from your headers and sample rows, then Python runs the math on its picks."
+            )
+        elif ctx.get("error") == "empty_dataset":
+            st.warning("The uploaded file has no rows.")
+
+        src = ctx.get("source_df")
+        df = ctx.get("df")
+        preview_df = src if src is not None and not getattr(src, "empty", True) else df
+        if preview_df is not None and len(preview_df) > 0:
+            with st.expander("Data preview & detected columns", expanded=False):
+                st.write("**Mapping source:**", ctx.get("mapping_source", "—"))
+                if ctx.get("llm_rationale"):
+                    st.caption(ctx["llm_rationale"])
+                st.write("**Detected mapping:**", ctx.get("columns", {}))
+                st.dataframe(preview_df.head(12), use_container_width=True, hide_index=True)
+
+        prov = st.selectbox(
+            "Provider for audit run",
+            options=["anthropic", "openai"],
+            format_func=lambda x: "Anthropic (Claude Haiku 4.5)" if x == "anthropic" else "OpenAI (gpt-4o)",
+            key="main_ai_provider",
+        )
+        main_key = st.text_input(
+            "API key for audit",
+            type="password",
+            key="main_ai_key",
+            help=_DEFAULT_KEY_HINT,
+        )
+        resolved_main = _resolve_api_key(prov, main_key)
+
+        run_disabled = bool(
+            src is None or getattr(src, "empty", True)
+        )
+        if st.button("Run AI forensic audit", type="primary", disabled=run_disabled):
+            st.session_state.audit_ready = True
+            ctx = st.session_state.forensic_ctx
+            ctx["accumulated"] = {}
+            if resolved_main:
+                mapping, infer_err = None, None
+                if src is not None and not getattr(src, "empty", True):
+                    with st.spinner(
+                        "Inferring columns from headers + sample rows (LLM)..."
+                    ):
+                        mapping, infer_err = infer_ledger_mapping(
+                            src, prov, resolved_main
+                        )
+                st.session_state.forensic_infer_note = infer_err
+                if mapping:
+                    st.session_state.forensic_ctx = prepare_ledger(
+                        src.copy(), llm_mapping=mapping
+                    )
+                    ctx = st.session_state.forensic_ctx
+                with st.spinner(
+                    "Agent is running tool-backed checks (this may take a minute)..."
+                ):
+                    out = run_forensic_agent(ctx, prov, resolved_main)
+                    st.session_state.agent_report = out.get("report") or ""
+                    st.session_state.agent_error = out.get("error")
+            else:
+                st.session_state.agent_report = ""
+                st.session_state.agent_error = (
+                    "no_api_key: add a key or set OPENAI_API_KEY / ANTHROPIC_API_KEY for the AI narrative."
+                )
+                st.session_state.forensic_infer_note = None
+                if not ctx.get("error"):
+                    ensure_all_checks(ctx)
+
+        if st.session_state.get("forensic_infer_note"):
+            st.caption(f"Column inference: {st.session_state.forensic_infer_note}")
+
+        # After an audit run: narrative optional; Python drilldowns when ledger parses.
+        ctx = st.session_state.forensic_ctx
+        df = ctx.get("df") if ctx else None
+        src_now = ctx.get("source_df") if ctx else None
+        if st.session_state.audit_ready and ctx and src_now is not None and not getattr(
+            src_now, "empty", True
+        ):
+            err = st.session_state.agent_error
+            if err:
+                if str(err).startswith("no_api_key"):
+                    st.warning(
+                        "Rule-based checks are shown below. Add an API key for LLM column inference + narrative."
+                    )
+                else:
+                    st.error(f"Model/API error: {err}")
+
+            if st.session_state.agent_report:
+                st.markdown("### AI narrative report")
+                st.markdown(st.session_state.agent_report)
+
+            if ctx.get("error"):
+                st.warning(
+                    "The ledger still has no validated amount column. Check the narrative for **remap_ledger** "
+                    "suggestions or fix the source file."
+                )
+            elif df is not None and len(df) > 0:
+                ensure_all_checks(ctx)
+                audit_df = summary_table_from_accumulated(ctx)
+
+                if audit_df is not None and not audit_df.empty:
+                    total = float(audit_df["Amount ($)"].sum())
+                    st.metric(
+                        "Total flagged exposure (Python checks)",
+                        f"${total:,.2f}",
+                    )
+                else:
+                    st.success(
+                        "No quantitative findings from rule-based checks on this file."
+                    )
+
+                filt = audit_df
+                if audit_df is not None and not audit_df.empty:
+                    opts = audit_df["Category"].unique().tolist()
+                    sel = st.multiselect(
+                        "Filter categories",
+                        opts,
+                        default=opts,
+                        key="cat_filter",
+                    )
+                    filt = audit_df[audit_df["Category"].isin(sel)]
+
+                col1, col2 = st.columns([1, 1.5])
+                with col1:
+                    st.write("### 🔍 Risk summary (rule-based)")
+                    if filt is not None and not filt.empty:
+                        st.dataframe(filt, use_container_width=True, hide_index=True)
+                        csv_data = filt.to_csv(index=False).encode("utf-8-sig")
+                        st.download_button(
+                            "Download summary CSV",
+                            csv_data,
+                            "ClearSpend_Summary.csv",
+                        )
+                    else:
+                        st.caption(
+                            "Summary table is empty when all checks return zero exposure."
+                        )
+                with col2:
+                    st.write("### 📈 Exposure by category")
+                    if filt is not None and not filt.empty:
+                        st.bar_chart(data=filt, x="Category", y="Amount ($)")
+                    else:
+                        st.caption("No bar chart when there are no findings.")
+
+                st.divider()
+                st.write("### Vendor exposure (from flagged rows)")
+                acc = ctx.get("accumulated", {})
+                vrows = []
+                for key, title in DRILLDOWN_TOOLS:
+                    payload = acc.get(key) or {}
+                    for row in payload.get("by_vendor") or []:
+                        if isinstance(row, dict) and row.get("vendor"):
+                            vrows.append(
+                                {
+                                    "Check": title,
+                                    "Vendor": row.get("vendor"),
+                                    "Exposure ($)": row.get(
+                                        "exposure_line_amount"
+                                    ),
+                                }
+                            )
+                if vrows:
+                    vdf = pd.DataFrame(vrows)
+                    vendors_pick = sorted(vdf["Vendor"].unique().tolist())
+                    pick = st.multiselect(
+                        "Filter vendors",
+                        vendors_pick,
+                        default=vendors_pick,
+                        key="vendor_filter",
+                    )
+                    show_v = vdf[vdf["Vendor"].isin(pick)]
+                    st.dataframe(show_v, use_container_width=True, hide_index=True)
+                else:
+                    st.caption("No vendor-level exposure rows for this run.")
+
+                st.write("### Row-level drilldown")
+                for tool_key, title in DRILLDOWN_TOOLS:
+                    payload = acc.get(tool_key) or {}
+                    exp = float(payload.get("exposure_usd") or 0)
+                    n = int(payload.get("flagged_row_count") or 0)
+                    sub = dataframe_from_tool_result(tool_key, payload)
+                    if sub is None or sub.empty:
+                        continue
+                    with st.expander(f"{title} — ${exp:,.2f} | {n} rows"):
+                        st.dataframe(
+                            sub, use_container_width=True, hide_index=True
+                        )
+
+                with st.expander("Context snippet for AI (debug)"):
+                    st.code(
+                        format_accumulated_for_llm(ctx)[:8000] or "(empty)"
+                    )
