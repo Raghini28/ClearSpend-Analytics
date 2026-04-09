@@ -1,9 +1,50 @@
 """Financial exposure should not treat every row as full-invoice risk."""
 
+import os
+
 import pandas as pd
 import pytest
 
 import manufacturing_ap_audit as mfg
+
+
+def test_blank_clearspend_fee_env_still_allows_median_inference():
+    """Secrets often set CLEARSPEND_EMBEDDED_FEE_RATE to \"\" — must not skip inference."""
+    rows = []
+    fee = 0.009363
+    for i in range(15):
+        inv = 1000.0 + i * 50.0
+        tax = round(inv * 0.08, 2)
+        subt = inv + tax
+        tot = round(subt * (1 + fee), 2)
+        rows.append(
+            {
+                "Invoice_ID": f"FE{i}",
+                "Vendor_Name": "Co",
+                "Vendor_ID": "V1",
+                "Category": "MRO",
+                "Invoice_Date": "2024-01-10",
+                "Payment_Date": "2024-01-15",
+                "Currency": "USD",
+                "Invoice_Amount": inv,
+                "Tax": tax,
+                "Total_Amount": tot,
+                "Payment_Status": "Paid",
+                "Cost_Center": "C1",
+                "Description": "x",
+            }
+        )
+    df = pd.DataFrame(rows)
+    old = os.environ.get("CLEARSPEND_EMBEDDED_FEE_RATE")
+    os.environ["CLEARSPEND_EMBEDDED_FEE_RATE"] = ""
+    try:
+        r = mfg.run_manufacturing_ap_audit(df)
+        assert r.findings["math_integrity"].empty
+    finally:
+        if old is None:
+            os.environ.pop("CLEARSPEND_EMBEDDED_FEE_RATE", None)
+        else:
+            os.environ["CLEARSPEND_EMBEDDED_FEE_RATE"] = old
 
 
 def test_math_cent_rounding_no_false_positive_from_float_noise():
@@ -61,7 +102,7 @@ def test_control_rules_do_not_inflate_dollar_exposure():
     assert r.kpis["data_quality_issue_rows"] > 0
 
 
-def test_math_exposure_uses_invoice_total_for_review_scope():
+def test_math_finding_does_not_inflate_flagged_exposure_kpi():
     df = pd.DataFrame(
         [
             {
@@ -84,8 +125,7 @@ def test_math_exposure_uses_invoice_total_for_review_scope():
     r = mfg.run_manufacturing_ap_audit(df)
     mi = r.findings["math_integrity"]
     assert len(mi) == 1
-    exp = r.flagged_exposure_usd
-    assert exp == 1085.0
+    assert r.flagged_exposure_usd == 0.0
     assert abs(float(mi.iloc[0]["Math_Delta"])) > 0.10
 
 

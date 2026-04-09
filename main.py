@@ -235,7 +235,7 @@ def _render_manufacturing_dashboard() -> None:
     m1.metric(
         "Flagged exposure (review $)",
         f"${k.get('flagged_exposure_usd', 0):,.0f}",
-        help="Substantive rules: each invoice counted once at ledger Total_Amount (near-dup pairs de-duplicated). Not cash recovery.",
+        help="Substantive rules (excludes math integrity): each invoice counted once at ledger Total_Amount (near-dup pairs de-duplicated). Not cash recovery.",
     )
     m2.metric(
         "Control issues ($ exposure)",

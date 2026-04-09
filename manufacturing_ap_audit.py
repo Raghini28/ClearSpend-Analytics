@@ -55,7 +55,7 @@ DATASET_GUIDE_MD = """### Dataset explanation (manufacturing AP)
 
 **Three outputs (critical)**
 1. **Estimated savings** — recoverable amounts from **exact duplicate extras**, **tax variance**, and **price drift** deltas only; **deduped per invoice** (max across those rules). **Not** math, near-dup, or control.
-2. **Flagged exposure** — **review scope $**: max **Total_Amount** per line key for all **non-control** hits (math, substantive rules, near-dup pairs). **Not** cash recovery.
+2. **Flagged exposure** — **review scope $**: max **Total_Amount** per line key for substantive hits (exact dup, tax, drift, near-dup). **Math integrity** is excluded (see Tax/math tab). **Not** cash recovery.
 3. **Control issues** — weekend, currency coding, **payment lag**, thresholds, vendor name spellings: **row counts always**; **$ exposure** only for threshold / currency / lag (weekend & vendor spelling excluded from control $ total); **never** savings.
 
 **Audit roles:** Python computes findings and KPIs; the **LLM only explains** from a compact brief (KPIs, top vendors, samples) — never the full multi-hundred-row file.
@@ -97,9 +97,9 @@ CONTROL_FINDING_KEYS = frozenset(
 )
 
 # Substantive audit hits: used for “flagged exposure” = sum of ledger Total_Amount once per invoice.
+# Math integrity is Review Required only and often mass-flags on fee/tolerance mismatch — keep it off this KPI.
 SUBSTANTIVE_EXPOSURE_FINDING_KEYS = frozenset(
     {
-        "math_integrity",
         "exact_duplicate",
         "tax_variance",
         "price_drift",
@@ -228,16 +228,33 @@ def infer_embedded_fee_rate(norm: pd.DataFrame) -> float | None:
     if int(_valid.sum()) <= 10:
         return None
     _implied = ((_tot[_valid] / (_inv[_valid] + _tax[_valid])) - 1.0).median()
+    if pd.isna(_implied):
+        return None
     if abs(float(_implied)) > 0.001:
         return round(float(_implied), 6)
     return None
+
+
+def resolve_embedded_fee_rate_for_math(norm: pd.DataFrame) -> float:
+    """
+    Effective fee rate for math check: explicit env wins if set and numeric; otherwise dataset inference;
+    otherwise 0. Treats missing or blank env as unset (so inference still runs — secrets.toml often uses ``""``).
+    """
+    raw = os.environ.get("CLEARSPEND_EMBEDDED_FEE_RATE")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            pass
+    inferred = infer_embedded_fee_rate(norm)
+    return float(inferred) if inferred is not None else 0.0
 
 
 def math_integrity_check(
     norm: pd.DataFrame,
     tolerance: float | None = None,
     *,
-    embedded_fee_rate: float | None = None,
+    fee_rate: float | None = None,
 ) -> pd.DataFrame:
     """
     Total_Amount should equal (Invoice_Amount + Tax) × (1 + fee_rate) after cent rounding.
@@ -245,8 +262,8 @@ def math_integrity_check(
     Uses **integer cents** so float noise does not false-flag. Optional **embedded fee** when
     the ERP bakes a surcharge into Total (e.g. processing fee as % of pre-fee subtotal).
 
-    If ``embedded_fee_rate`` is set (e.g. from :func:`infer_embedded_fee_rate`), it overrides
-    env for this call only. Otherwise ``CLEARSPEND_EMBEDDED_FEE_RATE`` is used when set.
+    If ``fee_rate`` is not ``None`` (e.g. from :func:`resolve_embedded_fee_rate_for_math`), that value is used.
+    Otherwise ``CLEARSPEND_EMBEDDED_FEE_RATE`` is read when set and non-blank.
 
     Env:
     - CLEARSPEND_MATH_TOLERANCE — max abs delta in **dollars** (after cent comparison logic).
@@ -266,16 +283,16 @@ def math_integrity_check(
     elif extra_penny and tolerance <= 0.10:
         tolerance = 0.11
 
-    fee_rate = 0.0
-    if embedded_fee_rate is not None:
-        fee_rate = float(embedded_fee_rate)
+    resolved_fee = 0.0
+    if fee_rate is not None:
+        resolved_fee = float(fee_rate)
     else:
         env_fee = os.environ.get("CLEARSPEND_EMBEDDED_FEE_RATE")
-        if env_fee is not None:
+        if env_fee is not None and str(env_fee).strip() != "":
             try:
-                fee_rate = float(env_fee)
+                resolved_fee = float(env_fee)
             except (TypeError, ValueError):
-                fee_rate = 0.0
+                resolved_fee = 0.0
 
     tol_cents = max(1, int(round(float(tolerance) * 100)))
 
@@ -290,7 +307,7 @@ def math_integrity_check(
     v_inv = np.asarray(inv, dtype=np.float64)
     v_tax = np.asarray(tax, dtype=np.float64)
     v_tot = np.asarray(tot, dtype=np.float64)
-    v_expected = (v_inv + v_tax) * (1.0 + fee_rate)
+    v_expected = (v_inv + v_tax) * (1.0 + resolved_fee)
     exp_c = np.rint(v_expected * 100.0)
     tot_c = np.rint(v_tot * 100.0)
     delta_c = tot_c - exp_c
@@ -310,7 +327,7 @@ def math_integrity_check(
     reason = (
         "Total amount does not match (Invoice + Tax) × (1 + embedded fee) beyond tolerance "
         "(cent-rounded check)."
-        if fee_rate != 0.0
+        if resolved_fee != 0.0
         else "Total amount does not match invoice amount plus tax beyond tolerance "
         "(cent-rounded check)."
     )
@@ -742,8 +759,9 @@ def compute_unique_flagged_exposure(
 ) -> float:
     """
     **Flagged exposure (review):** sum of **ledger Total_Amount** for each unique invoice
-    that hits any substantive rule (math, exact dup, tax, price drift, near-dup).
-    Control-only rows are excluded. Each invoice counted once.
+    that hits any substantive rule (exact dup, tax, price drift, near-dup). Math integrity
+    is excluded — review-only and tabulated separately. Control-only rows are excluded.
+    Each invoice counted once.
     """
     return float(sum(accumulate_unique_invoice_exposure_usd(findings, norm).values()))
 
@@ -783,8 +801,8 @@ def consolidate_findings(
 
     - **Estimated savings:** Recoverable + savings rules only; **max recoverable per Line_Key**
       (no double count across duplicate / tax / drift).
-    - **Flagged exposure:** sum of **ledger Total_Amount once per invoice** that hits any substantive
-      rule (math, dup, tax, drift, near-dup). Near-duplicate rows use pair keys internally, so this
+    - **Flagged exposure:** sum of **ledger Total_Amount once per invoice** that hits substantive
+      rules (dup, tax, drift, near-dup — not math). Near-duplicate rows use pair keys internally, so this
       **must not** use raw ``Line_Key`` max sums (that would count the same invoice once per pair).
     - **Control issue exposure:** max exposure per line for control rules only.
     """
@@ -916,12 +934,10 @@ def run_manufacturing_ap_audit(
     colmap = _resolve_columns(df_raw)
     norm = normalize_ledger(df_raw, colmap)
 
-    _inferred_fee: float | None = None
-    if os.environ.get("CLEARSPEND_EMBEDDED_FEE_RATE") is None:
-        _inferred_fee = infer_embedded_fee_rate(norm)
+    _math_fee = resolve_embedded_fee_rate_for_math(norm)
 
     findings = {
-        "math_integrity": math_integrity_check(norm, embedded_fee_rate=_inferred_fee),
+        "math_integrity": math_integrity_check(norm, fee_rate=_math_fee),
         "exact_duplicate": exact_duplicate_check(norm),
         "near_duplicate": near_duplicate_check(norm),
         "tax_variance": tax_variance_check(norm, expected_rate=expected_tax_rate),
@@ -1035,8 +1051,8 @@ def build_executive_summary_md(result: ManufacturingAuditResult) -> str:
         "",
         "### Flagged exposure (review scope in dollars)",
         f"- **${k.get('flagged_exposure_usd', 0):,.2f}** — max **ledger Total_Amount** per line (invoice or near-dup pair key) "
-        "across **non-control** hits: math integrity, substantive rules, near-duplicate review, **including** "
-        "reference rows in duplicate clusters. **Not** cash recovery; do not add to estimated savings.",
+        "for **exact duplicates, tax variance, price drift, and near-duplicates** (math integrity is **not** "
+        "included here — use the Tax / math tab). **Not** cash recovery; do not add to estimated savings.",
         "",
         "### Control issues (review only — not savings)",
         f"- **${k.get('control_issue_exposure_usd', 0):,.2f}** — dollar exposure for selected control flags "
@@ -1096,7 +1112,7 @@ def compact_context_for_llm(result: ManufacturingAuditResult, *, max_example_row
         "- Estimated savings = exact duplicates + tax variance + price drift only (deduped per invoice max)."
     )
     lines.append(
-        "- Flagged exposure = non-control findings: max Total_Amount (or pair exposure) per consolidated line key."
+        "- Flagged exposure = substantive findings (dup, tax, drift, near-dup): max Total_Amount per line key; math excluded."
     )
     lines.append(
         "- Control issue exposure = separate sum of max exposure per line for control rules; not savings."
