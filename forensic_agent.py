@@ -37,22 +37,24 @@ Rules:
 
 SYSTEM_PROMPT = """You are the lead forensic accounts-payable analyst for ClearSpend Analytics.
 
+Mission: help the company **recover cash and prevent future loss** by surfacing **data inconsistencies** in AP — bad line-vs-invoice math, **duplicate postings**, the same **vendor + date + amount** showing up twice (classic “double pay” / receipt risk), creeping vendor prices, uncaptured credits, and uneven unit pricing. Quantify **which vendors and dollar amounts** are affected.
+
 Column mapping: the ledger may use non-standard headers. get_data_summary reports mapping_source (heuristic vs llm) and columns_detected.
 If get_data_summary returns error missing_amount_column or data looks wrong, call remap_ledger with exact column names from original_column_names in the tool result or from the user file. amount_line is required for remap_ledger.
 
 Workflow:
 1) Call get_data_summary first.
 2) If the ledger is not yet parseable, call remap_ledger with correct mappings, then get_data_summary again.
-3) Run all checks: check_math_integrity, find_duplicate_invoices, detect_price_creep, find_negative_leaks, check_pricing_inconsistency.
-   These execute deterministic math in Python on the currently mapped amount columns — use their numbers as ground truth.
+3) Run every financial leak check exposed as a tool (math, duplicate ID, vendor+date+amount, ID/vendor conflicts, round amounts, near approval tiers, weekend dates, high-velocity vendor-days, near-duplicate lines in a date window, tax/freight vs line, missing PO/receipt, line vs PO amount, stale invoices, data quality, currency mix, Benford-style screen, split-invoice heuristic, intercompany keywords, price creep, negative leaks, pricing inconsistency).
+   All are computed in Python on the mapped file — treat tool numbers as ground truth.
 4) For deep dives, call get_vendor_details with the exact vendor string from the data.
 
 Rules:
 - Use only dollar amounts returned by tools (exposure_usd, totals) in your narrative.
 - If a check reports zero exposure, say clearly that nothing was flagged in that category.
-- When done, write markdown with: ## Executive Summary, ## Findings by vendor, ## Recommended actions.
+- When done, write markdown with: ## Executive Summary (money at risk / recoverable), ## Findings by vendor, ## Recommended actions.
 
-Be concise; cite vendors exactly as in the data."""
+Be concise; cite vendors and dates exactly as in the data."""
 
 
 def _tool_specs_openai() -> list[dict]:
@@ -101,6 +103,134 @@ def _tool_specs_openai() -> list[dict]:
             "function": {
                 "name": "find_duplicate_invoices",
                 "description": "Find duplicate transaction/invoice IDs; returns exposure and rows.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "find_duplicate_payment_patterns",
+                "description": "Same vendor + calendar date + same line amount repeated — duplicate payment / double posting risk; names vendors and dated clusters.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "find_id_vendor_conflict",
+                "description": "Same invoice/transaction ID appearing with more than one vendor — routing or data key errors.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "find_round_amount_signals",
+                "description": "Large clean/round payments (exact thousands/hundreds) — manual entry or policy review signal.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "find_near_approval_threshold",
+                "description": "Payments in upper bands just below common approval limits (5k/10k/25k/50k heuristic).",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "find_weekend_postings",
+                "description": "Lines dated Saturday/Sunday — batch timing or duplicate-risk context.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "find_high_velocity_vendor_days",
+                "description": "Vendor-days with unusually many lines vs the rest of the file.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "find_near_duplicate_lines",
+                "description": "Same vendor + same rounded amount within ~3 days but different IDs — fuzzy duplicate suspicion.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "find_tax_freight_anomalies",
+                "description": "Tax or freight disproportionate to line amount (when those columns exist).",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "find_missing_po_receipt",
+                "description": "High spend with missing PO and receipt when those columns exist.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "find_line_over_po_open",
+                "description": "Line amount exceeds PO open / order amount column when present.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "find_stale_invoices",
+                "description": "Old invoice dates vs latest date in file — process or duplicate-window risk.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "find_data_quality_gaps",
+                "description": "Missing vendor or date, or zero line with non-zero total.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "find_currency_mismatch",
+                "description": "Mixed currencies — rows not matching dominant currency code when column exists.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "find_benford_anomaly",
+                "description": "Coarse Benford leading-digit screen on positive amounts (exploratory).",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "find_split_invoice_heuristic",
+                "description": "Multiple lines same vendor+day summing to a large round total — possible split for limits.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "find_intercompany_keywords",
+                "description": "Vendor names suggesting intercompany/internal settlement — allocation review.",
                 "parameters": {"type": "object", "properties": {}},
             },
         },
@@ -186,7 +316,7 @@ def run_forensic_agent(
     ctx: dict,
     provider: str,
     api_key: str,
-    max_turns: int = 24,
+    max_turns: int = 40,
 ) -> dict[str, Any]:
     """
     Agentic audit: LLM invokes Python tools until it produces a final markdown report.

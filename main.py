@@ -5,6 +5,7 @@ import pandas as pd
 import streamlit as st
 
 from audit_engine import (
+    DRILLDOWN_TOOL_ORDER,
     dataframe_from_tool_result,
     ensure_all_checks,
     format_accumulated_for_llm,
@@ -16,7 +17,11 @@ from forensic_agent import infer_ledger_mapping, run_chat_turn, run_forensic_age
 # ----------------------------
 # 1) Page Configuration
 # ----------------------------
-st.set_page_config(page_title="ClearSpend Analytics", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(
+    page_title="ClearSpend — AP cost recovery",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
 st.markdown("""
 <style>
@@ -101,19 +106,18 @@ def _resolve_api_key(provider: str, sidebar_key: str) -> str:
     return ""
 
 
-DRILLDOWN_TOOLS = [
-    ("check_math_integrity", "Math Integrity Check"),
-    ("find_duplicate_invoices", "Duplicate Invoice"),
-    ("detect_price_creep", "Price Creep"),
-    ("find_negative_leaks", "Negative Leak"),
-    ("check_pricing_inconsistency", "Pricing Inconsistency"),
-]
+DRILLDOWN_TOOLS = DRILLDOWN_TOOL_ORDER
 
 # ----------------------------
 # 6) UI Flow: Login & Signup
 # ----------------------------
 if not st.session_state["logged_in"]:
     st.title("🛡️ ClearSpend Security Portal")
+    st.markdown(
+        "Find **inconsistencies that cost money**: line totals that don’t match invoices, **duplicate IDs**, "
+        "the **same vendor + date + amount** posted twice, **price creep**, uncaptured **credits**, and uneven pricing — "
+        "with **vendor-level** impact."
+    )
     tab_login, tab_signup = st.tabs(["Login", "Create Account"])
     
     with tab_login:
@@ -213,10 +217,12 @@ else:
             st.session_state.forensic_infer_note = None
             st.rerun()
 
-    st.title(f"📊 {st.session_state['org_name']} Recovery Dashboard")
+    st.title(f"📊 {st.session_state['org_name']} — Cost recovery & leakage dashboard")
     st.markdown(
-        "Upload an AP ledger, then **Run AI forensic audit**. A model first **infers column roles** odd layouts, "
-        "then **Python performs all arithmetic** on those columns; the agent interprets results and can **remap** if needed."
+        "Goal: **spot bad data before cash leaves** the company — math breaks, **duplicate payments** (same ID or "
+        "same **vendor + date + amount**), vendor **receipt / posting** clusters worth reviewing, **price drift**, and "
+        "stranded credits. Upload your ledger, then **Run AI forensic audit**: the model infers odd column layouts, "
+        "**Python runs the numbers** on those fields, and you get vendor-level drilldowns plus an executive narrative."
     )
 
     f = st.file_uploader("Upload AP Ledger (CSV or XLSX)", type=["csv", "xlsx"])
