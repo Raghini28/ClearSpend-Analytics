@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 
@@ -483,9 +485,17 @@ def tool_check_math_integrity(ctx: dict[str, Any]) -> dict[str, Any]:
     if ctx.get("error"):
         return {"error": ctx["error"]}
     df = ctx["df"]
-    mm = df[abs(df["__L"] - df["__T"]) > 0.05].copy()
-    mm["delta_usd"] = (mm["__T"] - mm["__L"]).round(2)
-    exposure = float(abs(mm["__T"] - mm["__L"]).sum()) if not mm.empty else 0.0
+    L = pd.to_numeric(df["__L"], errors="coerce")
+    T = pd.to_numeric(df["__T"], errors="coerce")
+    valid = L.notna() & T.notna()
+    tol_c = int(round(float(os.environ.get("CLEARSPEND_CLASSIC_MATH_TOLERANCE_CENTS", "11"))))
+    Lc = np.rint(np.asarray(L, dtype=np.float64) * 100.0)
+    Tc = np.rint(np.asarray(T, dtype=np.float64) * 100.0)
+    delta_c = np.abs(Tc - Lc)
+    bad = valid.to_numpy() & (delta_c > tol_c)
+    mm = df.loc[bad].copy()
+    mm["delta_usd"] = np.round((Tc[bad] - Lc[bad]) / 100.0, 2)
+    exposure = float(np.abs(Tc[bad] - Lc[bad]).sum() / 100.0) if bad.any() else 0.0
     return {
         "category": "Math Integrity Check",
         "priority": "Critical",
@@ -1170,7 +1180,12 @@ def tool_get_vendor_details(ctx: dict[str, Any], vendor_name: str) -> dict[str, 
     dup = sub["__ID"].duplicated(keep=False) & (
         sub["__ID"].astype(str).str.upper() != "N/A"
     )
-    math_bad = abs(sub["__L"] - sub["__T"]) > 0.05
+    sL = pd.to_numeric(sub["__L"], errors="coerce")
+    sT = pd.to_numeric(sub["__T"], errors="coerce")
+    _tolc = int(round(float(os.environ.get("CLEARSPEND_CLASSIC_MATH_TOLERANCE_CENTS", "11"))))
+    _Lc = np.rint(np.asarray(sL, dtype=np.float64) * 100.0)
+    _Tc = np.rint(np.asarray(sT, dtype=np.float64) * 100.0)
+    math_bad = pd.Series(np.abs(_Tc - _Lc) > _tolc, index=sub.index) & sL.notna() & sT.notna()
     neg = sub["__L"] < 0
     return {
         "vendor_query": vendor_name,

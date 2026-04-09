@@ -1,0 +1,10 @@
+# Reliable reload on macOS / some VMs where native FSEvents fails (watchdog SystemError).
+[server]
+fileWatcherType = "poll"
+headless = false
+
+[browser]
+gatherUsageStats = false
+
+[runner]
+fastReruns = true

@@ -1,0 +1,4 @@
+Invoice_ID,Vendor_Name,Vendor_ID,Category,Invoice_Date,Payment_Date,Currency,Invoice_Amount,Tax,Total_Amount,Payment_Status,Cost_Center,Description
+INV-1,Acme Corp,V-001,Raw Materials,2024-06-01,2024-06-10,USD,1000.0,80.0,1080.0,Paid,CC1,widgets
+INV-1A,Acme Corp,V-001,Raw Materials,2024-06-01,2024-06-11,USD,1000.0,80.0,1080.0,Paid,CC1,dup pay risk
+INV-2,Beta LLC,V-002,MRO,2024-06-05,2024-06-12,US$,500.0,40.0,540.0,Paid,CC2,parts

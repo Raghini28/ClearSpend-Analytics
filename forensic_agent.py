@@ -474,6 +474,8 @@ def run_chat_turn(
     api_key: str,
     chat_messages: list[dict],
     max_turns: int = 16,
+    *,
+    extra_system_append: str | None = None,
 ) -> str:
     """
     Follow-up chat with tools. chat_messages ends with the latest user message.
@@ -491,6 +493,11 @@ def run_chat_turn(
         + "\n\n## Latest quantitative context from this ledger (from prior audit tools):\n"
         + ctx_blob
     )
+    if extra_system_append and str(extra_system_append).strip():
+        enriched_system += (
+            "\n\n## Additional Python audit brief (read-only; do not contradict):\n"
+            + str(extra_system_append).strip()[:8000]
+        )
 
     if provider == "openai":
         return _chat_openai(ctx, api_key, chat_messages, max_turns, enriched_system)
@@ -754,3 +761,70 @@ def infer_ledger_mapping(
     if not parsed:
         return None, "Could not parse LLM column mapping (expected a JSON object)."
     return _validate_llm_mapping(df, parsed)
+
+
+MANUFACTURING_EXEC_SYSTEM = """You are a senior AP / vendor-spend analyst for a manufacturing company.
+
+You receive ONLY a short text brief from Python (KPIs and tiny JSON samples). The ledger is mostly healthy; a few rows have issues.
+
+Write an **Executive summary** in markdown:
+- Lead with **estimated recoverable savings** vs **flagged exposure** as **different** numbers; never say exposure equals savings.
+- Explicitly say control signals (currency labels, weekends, thresholds, vendor spelling) are **review / data quality**, not automatic dollars back.
+- Use the numeric KPIs exactly as given; do not invent line items or multiply numbers.
+- Keep it credible and concise (under 400 words). No tool calls — narrative only."""
+
+
+def run_manufacturing_executive_narrative(
+    brief: str,
+    provider: str,
+    api_key: str,
+) -> tuple[str, str | None]:
+    """Single LLM call — no tools, minimal tokens (Python finds, LLM explains)."""
+    api_key = (api_key or "").strip()
+    if not api_key:
+        return "", "missing_api_key"
+    brief = (brief or "").strip()[:12000]
+    user_msg = (
+        "Executive summary from this Python audit brief:\n\n" + brief
+    )
+    try:
+        if provider == "openai":
+            from openai import OpenAI
+
+            client = OpenAI(api_key=api_key)
+            throttle_llm()
+            r = call_with_retry(
+                lambda: client.chat.completions.create(
+                    model=OPENAI_MODEL,
+                    messages=[
+                        {"role": "system", "content": MANUFACTURING_EXEC_SYSTEM},
+                        {"role": "user", "content": user_msg},
+                    ],
+                    temperature=0.2,
+                    max_tokens=1200,
+                )
+            )
+            text = (r.choices[0].message.content or "").strip()
+            return text, None
+        if provider == "anthropic":
+            import anthropic
+
+            client = anthropic.Anthropic(api_key=api_key)
+            throttle_llm()
+            r = call_with_retry(
+                lambda: client.messages.create(
+                    model=ANTHROPIC_MODEL,
+                    max_tokens=1200,
+                    system=MANUFACTURING_EXEC_SYSTEM,
+                    messages=[{"role": "user", "content": user_msg}],
+                )
+            )
+            parts: list[str] = []
+            for b in r.content:
+                if getattr(b, "type", None) == "text":
+                    parts.append(getattr(b, "text", ""))
+            text = "\n".join(parts).strip()
+            return text, None
+        return "", "invalid_provider"
+    except Exception as e:
+        return "", str(e)
