@@ -216,12 +216,37 @@ def _tag_finding(
     return x
 
 
-def math_integrity_check(norm: pd.DataFrame, tolerance: float | None = None) -> pd.DataFrame:
+def infer_embedded_fee_rate(norm: pd.DataFrame) -> float | None:
+    """
+    Median of (Total / (Invoice + Tax) − 1) when env ``CLEARSPEND_EMBEDDED_FEE_RATE`` is unset;
+    used to avoid mass math flags when totals include a consistent % surcharge.
+    """
+    _inv = pd.to_numeric(norm["Invoice_Amount"], errors="coerce")
+    _tax = pd.to_numeric(norm["Tax"], errors="coerce")
+    _tot = pd.to_numeric(norm["Total_Amount"], errors="coerce")
+    _valid = _inv.notna() & _tax.notna() & _tot.notna() & (_inv + _tax > 0)
+    if int(_valid.sum()) <= 10:
+        return None
+    _implied = ((_tot[_valid] / (_inv[_valid] + _tax[_valid])) - 1.0).median()
+    if abs(float(_implied)) > 0.001:
+        return round(float(_implied), 6)
+    return None
+
+
+def math_integrity_check(
+    norm: pd.DataFrame,
+    tolerance: float | None = None,
+    *,
+    embedded_fee_rate: float | None = None,
+) -> pd.DataFrame:
     """
     Total_Amount should equal (Invoice_Amount + Tax) × (1 + fee_rate) after cent rounding.
 
     Uses **integer cents** so float noise does not false-flag. Optional **embedded fee** when
     the ERP bakes a surcharge into Total (e.g. processing fee as % of pre-fee subtotal).
+
+    If ``embedded_fee_rate`` is set (e.g. from :func:`infer_embedded_fee_rate`), it overrides
+    env for this call only. Otherwise ``CLEARSPEND_EMBEDDED_FEE_RATE`` is used when set.
 
     Env:
     - CLEARSPEND_MATH_TOLERANCE — max abs delta in **dollars** (after cent comparison logic).
@@ -242,12 +267,15 @@ def math_integrity_check(norm: pd.DataFrame, tolerance: float | None = None) -> 
         tolerance = 0.11
 
     fee_rate = 0.0
-    env_fee = os.environ.get("CLEARSPEND_EMBEDDED_FEE_RATE")
-    if env_fee is not None:
-        try:
-            fee_rate = float(env_fee)
-        except (TypeError, ValueError):
-            fee_rate = 0.0
+    if embedded_fee_rate is not None:
+        fee_rate = float(embedded_fee_rate)
+    else:
+        env_fee = os.environ.get("CLEARSPEND_EMBEDDED_FEE_RATE")
+        if env_fee is not None:
+            try:
+                fee_rate = float(env_fee)
+            except (TypeError, ValueError):
+                fee_rate = 0.0
 
     tol_cents = max(1, int(round(float(tolerance) * 100)))
 
@@ -888,8 +916,12 @@ def run_manufacturing_ap_audit(
     colmap = _resolve_columns(df_raw)
     norm = normalize_ledger(df_raw, colmap)
 
+    _inferred_fee: float | None = None
+    if os.environ.get("CLEARSPEND_EMBEDDED_FEE_RATE") is None:
+        _inferred_fee = infer_embedded_fee_rate(norm)
+
     findings = {
-        "math_integrity": math_integrity_check(norm),
+        "math_integrity": math_integrity_check(norm, embedded_fee_rate=_inferred_fee),
         "exact_duplicate": exact_duplicate_check(norm),
         "near_duplicate": near_duplicate_check(norm),
         "tax_variance": tax_variance_check(norm, expected_rate=expected_tax_rate),
@@ -1007,15 +1039,16 @@ def build_executive_summary_md(result: ManufacturingAuditResult) -> str:
         "reference rows in duplicate clusters. **Not** cash recovery; do not add to estimated savings.",
         "",
         "### Control issues (review only — not savings)",
-        f"- **${k.get('control_issue_exposure_usd', 0):,.2f}** — dollar **exposure** for selected control flags "
-        "(near-threshold, currency coding, payment lag); **weekend dates and vendor-name variations are row-level "
-        "only and excluded from this $ total**. **{k.get('data_quality_issue_rows', 0)}** control row(s) overall.",
+        f"- **${k.get('control_issue_exposure_usd', 0):,.2f}** — dollar exposure for selected control flags "
+        f"(near-threshold, currency coding, payment lag); weekend dates and vendor-name variations are row-level "
+        f"only and excluded from this total. **{k.get('data_quality_issue_rows', 0)}** control row(s) overall.",
         "",
         f"- **Exact-duplicate cluster rows:** {k.get('confirmed_duplicate_rows', 0)}",
         "",
         "### Math integrity",
-        "- **Cent-rounded** check: `Total_Amount` vs `(Invoice_Amount + Tax) × (1 + fee)` (default fee **0**; "
-        "set `CLEARSPEND_EMBEDDED_FEE_RATE` if ERP embeds a surcharge). Tolerance: **$0.10** baseline; "
+        "- **Cent-rounded** check: `Total_Amount` vs `(Invoice_Amount + Tax) × (1 + fee)` (fee **0** unless "
+        "`CLEARSPEND_EMBEDDED_FEE_RATE` is set, or the run **infers** a consistent median surcharge when "
+        "that env var is unset and there are enough rows). Tolerance: **$0.10** baseline; "
         "`CLEARSPEND_MATH_TOLERANCE`, optional 1¢ cushion via `CLEARSPEND_MATH_EXTRA_PENNY=1`. "
         "**Review Required** — not included in estimated savings. If **mass-flag warning** appears, "
         "adjust fee/tolerance or column definitions.",
