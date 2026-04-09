@@ -1,0 +1,11 @@
+.streamlit/secrets.toml
+llm_settings.json
+users_db.json
+.venv/
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+BUNDLE_FOR_CLAUDE.txt
+data/*.sqlite
+data/audit_trail.jsonl

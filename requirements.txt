@@ -3,3 +3,6 @@ pandas
 openpyxl
 anthropic
 openai
+bcrypt
+fpdf2
+pytest

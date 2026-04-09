@@ -48,6 +48,130 @@ def _match_col(df: pd.DataFrame, name: str | None) -> str | None:
     return None
 
 
+def apply_post_prepare_enrichment(ctx: dict[str, Any]) -> None:
+    """Load ignore-list, optional FX rates → USD on monetary columns (in-place on ctx['df'])."""
+    from services.config_loader import load_fx_rates, load_ignored_vendors
+
+    ctx["ignored_vendors"] = load_ignored_vendors()
+    ctx["fx_normalized"] = False
+    if ctx.get("error"):
+        return
+    df = ctx.get("df")
+    if df is None or getattr(df, "empty", True):
+        return
+    rates = load_fx_rates()
+    if not rates or "__CCY" not in df.columns:
+        return
+    ccy = (
+        df["__CCY"]
+        .astype(str)
+        .str.strip()
+        .str.upper()
+        .replace({"NAN": "", "NONE": ""})
+    )
+
+    def rate_for(c: str) -> float:
+        if not c or c in ("USD", "US DOLLAR"):
+            return 1.0
+        return float(rates.get(c, 1.0))
+
+    mult = ccy.map(rate_for).astype(float)
+    for col in ("__L", "__T", "__U", "__PO_AMT", "__TAX", "__FR"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0) * mult
+    ctx["fx_normalized"] = True
+
+
+def _row_vendor_key(row: dict) -> str:
+    for k in ("__V", "vendor", "Supplier_Nm", "SUPPLIER_KEY"):
+        if k in row and row[k] is not None and str(row[k]).strip():
+            return str(row[k]).strip().lower()
+    return ""
+
+
+def apply_ignored_vendors_to_result(
+    ctx: dict[str, Any], res: dict[str, Any]
+) -> dict[str, Any]:
+    ign = ctx.get("ignored_vendors") or set()
+    if not ign or not isinstance(res, dict) or res.get("error"):
+        return res
+    cd = res.get("creep_detail")
+    if isinstance(cd, list) and cd:
+        cd2 = [r for r in cd if str(r.get("vendor", "")).strip().lower() not in ign]
+        if len(cd2) != len(cd):
+            out = dict(res)
+            out["creep_detail"] = cd2
+            out["exposure_usd"] = float(
+                sum(float(r.get("approx_exposure_usd") or 0) for r in cd2)
+            )
+            out["flagged_row_count"] = int(
+                sum(int(r.get("rows_affected") or 0) for r in cd2)
+            )
+            out["by_vendor"] = [
+                {"vendor": r["vendor"], "exposure_line_amount": r["approx_exposure_usd"]}
+                for r in cd2
+            ]
+            out["flagged_rows"] = cd2[:300]
+            return out
+        return res
+
+    fr = res.get("flagged_rows")
+    if not isinstance(fr, list) or not fr:
+        return res
+    fr2 = [r for r in fr if _row_vendor_key(r) not in ign]
+    if len(fr2) == len(fr):
+        return res
+    out = dict(res)
+    out["flagged_rows"] = fr2
+    out["flagged_row_count"] = len(fr2)
+    exp = 0.0
+    for r in fr2:
+        if "__L" in r:
+            try:
+                exp += abs(float(r["__L"]))
+            except (TypeError, ValueError):
+                pass
+    if exp > 0:
+        out["exposure_usd"] = exp
+    else:
+        old_exp = float(res.get("exposure_usd") or 0)
+        old_n = max(len(fr), 1)
+        out["exposure_usd"] = old_exp * (len(fr2) / old_n)
+    bv = out.get("by_vendor")
+    if isinstance(bv, list):
+        out["by_vendor"] = [
+            x
+            for x in bv
+            if str(x.get("vendor", "")).strip().lower() not in ign
+        ]
+    return out
+
+
+TOOL_CONFIDENCE: dict[str, str] = {
+    "check_math_integrity": "High",
+    "find_duplicate_invoices": "High",
+    "find_duplicate_payment_patterns": "Medium",
+    "find_id_vendor_conflict": "High",
+    "find_round_amount_signals": "Low",
+    "find_near_approval_threshold": "Medium",
+    "find_weekend_postings": "Low",
+    "find_high_velocity_vendor_days": "Medium",
+    "find_near_duplicate_lines": "Medium",
+    "find_tax_freight_anomalies": "Medium",
+    "find_missing_po_receipt": "Medium",
+    "find_line_over_po_open": "High",
+    "find_stale_invoices": "Low",
+    "find_data_quality_gaps": "Medium",
+    "find_currency_mismatch": "Medium",
+    "find_benford_anomaly": "Low",
+    "find_split_invoice_heuristic": "Low",
+    "find_intercompany_keywords": "Low",
+    "detect_price_creep": "Medium",
+    "find_negative_leaks": "High",
+    "check_pricing_inconsistency": "Medium",
+}
+
+
 def prepare_ledger(
     df_raw: pd.DataFrame,
     llm_mapping: dict[str, Any] | None = None,
@@ -71,6 +195,7 @@ def prepare_ledger(
     }
     if df_raw is None or df_raw.empty:
         out["error"] = "empty_dataset"
+        apply_post_prepare_enrichment(out)
         return out
 
     out["source_df"] = df_raw.copy()
@@ -158,6 +283,7 @@ def prepare_ledger(
     if not c_amt:
         out["error"] = "missing_amount_column"
         out["df"] = df
+        apply_post_prepare_enrichment(out)
         return out
 
     if not c_id:
@@ -218,6 +344,7 @@ def prepare_ledger(
 
     out["df"] = df
     out["error"] = None
+    apply_post_prepare_enrichment(out)
     return out
 
 
@@ -1101,6 +1228,7 @@ def dispatch_tool(name: str, args: dict, ctx: dict[str, Any]) -> dict[str, Any]:
     if not fn:
         return {"error": f"unknown_tool:{name}"}
     result = fn(ctx, args or {})
+    result = apply_ignored_vendors_to_result(ctx, result)
     acc = ctx.setdefault("accumulated", {})
     acc[name] = result
     return result
@@ -1203,6 +1331,7 @@ def summary_table_from_accumulated(ctx: dict[str, Any]) -> pd.DataFrame:
                 "Amount ($)": exp,
                 "Rows": n,
                 "Priority": priority[key],
+                "Confidence": TOOL_CONFIDENCE.get(key, "Medium"),
             }
         )
     return pd.DataFrame(rows)

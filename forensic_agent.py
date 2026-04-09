@@ -9,6 +9,8 @@ from typing import Any
 import pandas as pd
 
 from audit_engine import MAP_KEYS, dispatch_tool, ensure_all_checks, format_accumulated_for_llm
+from services.llm_retry import call_with_retry
+from services.rate_limit import throttle_llm
 
 # Override with ANTHROPIC_MODEL / OPENAI_MODEL env if your account uses a dated snapshot id.
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5")
@@ -350,11 +352,14 @@ def _agent_openai(ctx: dict, api_key: str, max_turns: int) -> dict[str, Any]:
     last_err = None
     for _ in range(max_turns):
         try:
-            completion = client.chat.completions.create(
-                model=OPENAI_MODEL,
-                messages=messages,
-                tools=tools,
-                tool_choice="auto",
+            throttle_llm()
+            completion = call_with_retry(
+                lambda: client.chat.completions.create(
+                    model=OPENAI_MODEL,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice="auto",
+                )
             )
         except Exception as e:
             last_err = str(e)
@@ -414,12 +419,15 @@ def _agent_anthropic(ctx: dict, api_key: str, max_turns: int) -> dict[str, Any]:
     last_err = None
     for _ in range(max_turns):
         try:
-            message = client.messages.create(
-                model=ANTHROPIC_MODEL,
-                max_tokens=8192,
-                system=SYSTEM_PROMPT,
-                tools=tools,
-                messages=messages,
+            throttle_llm()
+            message = call_with_retry(
+                lambda: client.messages.create(
+                    model=ANTHROPIC_MODEL,
+                    max_tokens=8192,
+                    system=SYSTEM_PROMPT,
+                    tools=tools,
+                    messages=messages,
+                )
             )
         except Exception as e:
             last_err = str(e)
@@ -469,7 +477,10 @@ def run_chat_turn(
     """
     api_key = (api_key or "").strip()
     if not api_key:
-        return "Add an API key in the sidebar to use the AI assistant."
+        return (
+            "No LLM API key on the server. Configure OPENAI_API_KEY or ANTHROPIC_API_KEY "
+            "(environment, .streamlit/secrets.toml, or llm_settings.json)."
+        )
 
     ctx_blob = format_accumulated_for_llm(ctx)
     enriched_system = (
@@ -504,11 +515,14 @@ def _chat_openai(
     reply = ""
     for _ in range(max_turns):
         try:
-            completion = client.chat.completions.create(
-                model=OPENAI_MODEL,
-                messages=messages,
-                tools=tools,
-                tool_choice="auto",
+            throttle_llm()
+            completion = call_with_retry(
+                lambda: client.chat.completions.create(
+                    model=OPENAI_MODEL,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice="auto",
+                )
             )
         except Exception as e:
             return f"OpenAI error: {e}"
@@ -563,12 +577,15 @@ def _chat_anthropic(
     reply = ""
     for _ in range(max_turns):
         try:
-            message = client.messages.create(
-                model=ANTHROPIC_MODEL,
-                max_tokens=4096,
-                system=system_text,
-                tools=tools,
-                messages=messages,
+            throttle_llm()
+            message = call_with_retry(
+                lambda: client.messages.create(
+                    model=ANTHROPIC_MODEL,
+                    max_tokens=4096,
+                    system=system_text,
+                    tools=tools,
+                    messages=messages,
+                )
             )
         except Exception as e:
             return f"Anthropic error: {e}"
@@ -691,25 +708,35 @@ def infer_ledger_mapping(
             from openai import OpenAI
 
             client = OpenAI(api_key=api_key)
-            r = client.chat.completions.create(
-                model=OPENAI_MODEL,
-                messages=[
-                    {"role": "system", "content": SCHEMA_INFERENCE_PROMPT},
-                    {"role": "user", "content": user_msg},
-                ],
-                temperature=0.1,
-            )
+
+            def _infer_oai():
+                return client.chat.completions.create(
+                    model=OPENAI_MODEL,
+                    messages=[
+                        {"role": "system", "content": SCHEMA_INFERENCE_PROMPT},
+                        {"role": "user", "content": user_msg},
+                    ],
+                    temperature=0.1,
+                )
+
+            throttle_llm()
+            r = call_with_retry(_infer_oai)
             text = r.choices[0].message.content or ""
         elif provider == "anthropic":
             import anthropic
 
             client = anthropic.Anthropic(api_key=api_key)
-            r = client.messages.create(
-                model=ANTHROPIC_MODEL,
-                max_tokens=1024,
-                system=SCHEMA_INFERENCE_PROMPT,
-                messages=[{"role": "user", "content": user_msg}],
-            )
+
+            def _infer_ant():
+                return client.messages.create(
+                    model=ANTHROPIC_MODEL,
+                    max_tokens=1024,
+                    system=SCHEMA_INFERENCE_PROMPT,
+                    messages=[{"role": "user", "content": user_msg}],
+                )
+
+            throttle_llm()
+            r = call_with_retry(_infer_ant)
             parts: list[str] = []
             for b in r.content:
                 if getattr(b, "type", None) == "text":
