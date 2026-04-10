@@ -240,7 +240,7 @@ def _render_manufacturing_dashboard() -> None:
     m2.metric(
         "Control issues ($ exposure)",
         f"${k.get('control_issue_exposure_usd', 0):,.0f}",
-        help="Near-threshold, currency coding, payment-lag $ rollup; weekend and vendor-name rows are excluded from $ (see control tab for all rows). Not savings.",
+        help="Near-threshold and payment-lag $ rollup; weekend, vendor-name, and currency-coding rows are excluded from $ (see control tab for all rows). Not savings.",
     )
     m3.metric(
         "Estimated savings",
@@ -366,7 +366,7 @@ def _render_manufacturing_dashboard() -> None:
             st.caption("No control issues.")
         st.caption(
             "Stale = payment lag (payment date − invoice date) vs `CLEARSPEND_STALE_INVOICE_DAYS` (default 120). "
-            "Weekend and vendor-name spelling hits are excluded from the **Control issues ($ exposure)** KPI above; "
+            "Weekend, vendor-name, and currency-coding hits are excluded from the **Control issues ($ exposure)** KPI above; "
             "Rows still appear here for review."
         )
         st.caption("Normalized ledger preview (first 200 rows):")

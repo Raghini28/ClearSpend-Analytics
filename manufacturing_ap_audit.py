@@ -56,7 +56,7 @@ DATASET_GUIDE_MD = """### Dataset explanation (manufacturing AP)
 **Three outputs (critical)**
 1. **Estimated savings** — recoverable amounts from **exact duplicate extras**, **tax variance**, and **price drift** deltas only; **deduped per invoice** (max across those rules). **Not** math, near-dup, or control.
 2. **Flagged exposure** — **review scope $**: max **Total_Amount** per line key for substantive hits (exact dup, tax, drift, near-dup). **Math integrity** is excluded (see Tax/math tab). **Not** cash recovery.
-3. **Control issues** — weekend, currency coding, **payment lag**, thresholds, vendor name spellings: **row counts always**; **$ exposure** only for threshold / currency / lag (weekend & vendor spelling excluded from control $ total); **never** savings.
+3. **Control issues** — weekend, currency coding, **payment lag**, thresholds, vendor name spellings: **row counts always**; **$ exposure** only for threshold and payment-lag signals (weekend, vendor spelling, and **currency coding** are row-level only and excluded from control $ total); **never** savings.
 
 **Audit roles:** Python computes findings and KPIs; the **LLM only explains** from a compact brief (KPIs, top vendors, samples) — never the full multi-hundred-row file.
 """
@@ -88,7 +88,11 @@ FINDING_CONTROL = "Control Issue"
 
 # Weekend / master-data spelling issues: keep rows for review but do not sum invoice $ into control exposure.
 CONTROL_RULES_EXCLUDE_FROM_DOLLAR_EXPOSURE = frozenset(
-    {"Weekend Posting Review", "Vendor Name Variation"}
+    {
+        "Weekend Posting Review",
+        "Vendor Name Variation",
+        "Currency Coding Inconsistency",
+    }
 )
 
 # Control / hygiene — never estimated savings; optional row counts only.
@@ -383,8 +387,14 @@ def near_duplicate_check(
     date_window_days: int = 7,
     amount_tolerance: float = 5.0,
 ) -> pd.DataFrame:
+    # Rows already in exact-duplicate clusters are handled by exact_duplicate_check; do not
+    # pair them again here (same vendor/date/amount often falls within the near-dup window).
+    exact_dup_keys = ["Vendor_ID", "Invoice_Date", "Invoice_Amount", "Tax", "Total_Amount"]
+    exact_dup_mask = norm.duplicated(subset=exact_dup_keys, keep=False)
+    work_norm = norm[~exact_dup_mask].copy()
+
     rows: list[dict[str, Any]] = []
-    work = norm.sort_values(["Vendor_ID", "Invoice_Date"]).reset_index(drop=True)
+    work = work_norm.sort_values(["Vendor_ID", "Invoice_Date"]).reset_index(drop=True)
 
     for vendor_id, group in work.groupby("Vendor_ID", sort=False):
         g = group.sort_values("Invoice_Date").reset_index(drop=True)
@@ -1055,8 +1065,8 @@ def build_executive_summary_md(result: ManufacturingAuditResult) -> str:
         "included here — use the Tax / math tab). **Not** cash recovery; do not add to estimated savings.",
         "",
         "### Control issues (review only — not savings)",
-        f"- **${k.get('control_issue_exposure_usd', 0):,.2f}** — dollar exposure for selected control flags "
-        f"(near-threshold, currency coding, payment lag); weekend dates and vendor-name variations are row-level "
+        f"- **${k.get('control_issue_exposure_usd', 0):,.2f}** — dollar exposure for **near-threshold and payment-lag** "
+        f"control flags; weekend dates, vendor-name variations, and currency coding are row-level "
         f"only and excluded from this total. **{k.get('data_quality_issue_rows', 0)}** control row(s) overall.",
         "",
         f"- **Exact-duplicate cluster rows:** {k.get('confirmed_duplicate_rows', 0)}",
