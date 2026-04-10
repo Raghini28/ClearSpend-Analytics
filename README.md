@@ -46,7 +46,7 @@ Optional one-off without touching config:
 STREAMLIT_SERVER_FILE_WATCHER_TYPE=poll streamlit run main.py
 ```
 
-API keys: environment variables `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`, Streamlit secrets, or server-side `llm_settings.json`.
+**LLM API keys** (never committed): set **`OPENAI_API_KEY`** / **`ANTHROPIC_API_KEY`** as environment variables, in **Streamlit Cloud → App secrets** (TOML), or in **`llm_settings.json`** on the server (see `llm_settings.json.example`; the real file is gitignored). Optional aliases: **`CLEARSPEND_OPENAI_API_KEY`**, **`CLEARSPEND_ANTHROPIC_API_KEY`**. Nested secrets `[llm]` in TOML are supported — see `.streamlit/secrets.toml.example`.
 
 ## Video assignment (talking points)
 

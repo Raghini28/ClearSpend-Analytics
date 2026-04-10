@@ -3,6 +3,7 @@ import os
 import time
 from collections import deque
 from pathlib import Path
+from typing import Any, Callable
 
 import pandas as pd
 import streamlit as st
@@ -102,36 +103,68 @@ def _secrets_get(name: str) -> str:
         return ""
 
 
-def _resolve_api_key(provider: str) -> str:
-    """Backend-only keys: env → Streamlit secrets → llm_settings.json on server (never from the browser)."""
+def _secrets_nested_get(*path: str) -> str:
+    """Read nested keys from ``st.secrets`` (TOML sections), e.g. ``[llm] ANTHROPIC_API_KEY``."""
+    try:
+        cur: Any = st.secrets
+        for p in path:
+            if isinstance(cur, dict):
+                cur = cur.get(p)
+            else:
+                cur = getattr(cur, p, None)
+            if cur is None:
+                return ""
+        return str(cur).strip()
+    except Exception:
+        return ""
+
+
+def _llm_settings_key(name: str) -> str:
+    return (_load_llm_settings().get(name) or "").strip()
+
+
+def _api_key_resolution(provider: str) -> tuple[str, str]:
+    """
+    Resolve backend LLM API key and a **safe** source label (never the key itself).
+    Order: namespaced env → standard env → flat Streamlit secret → nested secrets → llm_settings.json.
+    """
     if provider == "openai":
-        for v in (
-            os.environ.get("OPENAI_API_KEY", ""),
-            _secrets_get("OPENAI_API_KEY"),
-            (_load_llm_settings().get("OPENAI_API_KEY") or "").strip(),
-        ):
-            if (v or "").strip():
-                return str(v).strip()
-    if provider == "anthropic":
-        for v in (
-            os.environ.get("ANTHROPIC_API_KEY", ""),
-            _secrets_get("ANTHROPIC_API_KEY"),
-            (_load_llm_settings().get("ANTHROPIC_API_KEY") or "").strip(),
-        ):
-            if (v or "").strip():
-                return str(v).strip()
-    return ""
+        chain: list[tuple[str, Callable[[], str]]] = [
+            ("environment CLEARSPEND_OPENAI_API_KEY", lambda: os.environ.get("CLEARSPEND_OPENAI_API_KEY", "").strip()),
+            ("environment OPENAI_API_KEY", lambda: os.environ.get("OPENAI_API_KEY", "").strip()),
+            ("Streamlit secrets OPENAI_API_KEY", lambda: _secrets_get("OPENAI_API_KEY").strip()),
+            ("Streamlit secrets [llm] OPENAI_API_KEY", lambda: _secrets_nested_get("llm", "OPENAI_API_KEY")),
+            ("Streamlit secrets [openai] api_key", lambda: _secrets_nested_get("openai", "api_key")),
+            ("llm_settings.json OPENAI_API_KEY", lambda: _llm_settings_key("OPENAI_API_KEY")),
+        ]
+    elif provider == "anthropic":
+        chain = [
+            ("environment CLEARSPEND_ANTHROPIC_API_KEY", lambda: os.environ.get("CLEARSPEND_ANTHROPIC_API_KEY", "").strip()),
+            ("environment ANTHROPIC_API_KEY", lambda: os.environ.get("ANTHROPIC_API_KEY", "").strip()),
+            ("Streamlit secrets ANTHROPIC_API_KEY", lambda: _secrets_get("ANTHROPIC_API_KEY").strip()),
+            ("Streamlit secrets [llm] ANTHROPIC_API_KEY", lambda: _secrets_nested_get("llm", "ANTHROPIC_API_KEY")),
+            ("Streamlit secrets [anthropic] api_key", lambda: _secrets_nested_get("anthropic", "api_key")),
+            ("llm_settings.json ANTHROPIC_API_KEY", lambda: _llm_settings_key("ANTHROPIC_API_KEY")),
+        ]
+    else:
+        return "", ""
+
+    for src_label, getter in chain:
+        v = getter()
+        if v:
+            return v, src_label
+    return "", ""
+
+
+def _resolve_api_key(provider: str) -> str:
+    """Backend-only keys — never from the browser; never log the returned value."""
+    key, _src = _api_key_resolution(provider)
+    return key
 
 
 def _api_key_source_label(provider: str) -> str:
-    key_name = "OPENAI_API_KEY" if provider == "openai" else "ANTHROPIC_API_KEY"
-    if os.environ.get(key_name):
-        return f"environment variable {key_name}"
-    if _secrets_get(key_name):
-        return ".streamlit/secrets.toml"
-    if (_load_llm_settings().get(key_name) or "").strip():
-        return "llm_settings.json (on the server)"
-    return ""
+    _key, src = _api_key_resolution(provider)
+    return src
 
 
 def _is_admin_session() -> bool:
@@ -555,9 +588,10 @@ else:
 
         st.subheader("LLM provider")
         st.caption(
-            "API keys are **not entered in the browser**. They must be set on the **server** "
-            "(environment variables, `.streamlit/secrets.toml`, or `llm_settings.json`). "
-            "See **Download sample… → Backend LLM configuration** on the main page."
+            "API keys are **not entered in the browser**. Set them on the **server**: environment variables "
+            "(`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` or `CLEARSPEND_*` aliases), Streamlit **App secrets** (Cloud), "
+            "local `.streamlit/secrets.toml`, or `llm_settings.json` (gitignored). "
+            "See **Download sample… → Backend LLM configuration**."
         )
         provider = st.selectbox(
             "Chat model provider",
@@ -666,16 +700,24 @@ Keys are read only on the machine running Streamlit, in this order:
    export OPENAI_API_KEY="sk-..."
    export ANTHROPIC_API_KEY="sk-ant-..."
    ```
+   Optional namespaced aliases (same behavior, useful when another app already uses the standard names):
+   `CLEARSPEND_OPENAI_API_KEY`, `CLEARSPEND_ANTHROPIC_API_KEY`.  
    Optional: `OPENAI_MODEL`, `ANTHROPIC_MODEL`.
 
-2. **`.streamlit/secrets.toml`** — next to `main.py` (e.g. Streamlit Community Cloud, or local deploy):
+2. **`.streamlit/secrets.toml`** — next to `main.py` (local deploy), **or** Streamlit Community Cloud **App settings → Secrets** (paste TOML there — it becomes `st.secrets`, nothing is committed):
    ```toml
+   OPENAI_API_KEY = "sk-..."
+   ANTHROPIC_API_KEY = "sk-ant-..."
+   ```
+   Optional nested grouping (also supported):
+   ```toml
+   [llm]
    OPENAI_API_KEY = "sk-..."
    ANTHROPIC_API_KEY = "sk-ant-..."
    ```
    Use `.streamlit/secrets.toml.example` as a template. **Never commit real keys.**
 
-3. **`llm_settings.json`** — same directory as `main.py`, created only by ops on the server (gitignored):
+3. **`llm_settings.json`** — same directory as `main.py`, created only by ops on the server (**gitignored** — use `llm_settings.json.example` as a template):
    ```json
    { "OPENAI_API_KEY": "...", "ANTHROPIC_API_KEY": "..." }
    ```
